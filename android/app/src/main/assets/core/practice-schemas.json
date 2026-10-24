@@ -1,0 +1,150 @@
+{
+  "problem": {
+    "type": "object",
+    "required": [
+      "statement",
+      "mode",
+      "modelSolution"
+    ],
+    "properties": {
+      "statement": {
+        "type": "string",
+        "description": "REQUIRED — the problem as the learner sees it (markdown + LaTeX). Must be self-contained and solvable from the session's material. NEVER announces the target proposition."
+      },
+      "mode": {
+        "anyOf": [
+          {
+            "type": "string",
+            "const": "recall"
+          },
+          {
+            "type": "string",
+            "const": "discrimination"
+          },
+          {
+            "type": "string",
+            "const": "composition"
+          }
+        ],
+        "description": "REQUIRED — the demand mode: recall, discrimination, or composition (bare words, no quotes)."
+      },
+      "target": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "minItems": 1,
+        "description": "The proposition id(s) this problem exercises, from the session context's [id] list — include when the material is in the map; OMIT entirely when it is not (a topic session poses untagged problems). Names are normalized to ids at the seam; an unknown proposition is rejected."
+      },
+      "modelSolution": {
+        "type": "string",
+        "description": "REQUIRED — the full solution, moves in order, committed BEFORE the learner sees the problem. This IS the reveal — conclude shows it verbatim; never re-author it."
+      }
+    }
+  },
+  "conclude": {
+    "type": "object",
+    "required": [
+      "outcome",
+      "verdict",
+      "rung",
+      "missClass",
+      "retest"
+    ],
+    "properties": {
+      "outcome": {
+        "anyOf": [
+          {
+            "type": "string",
+            "const": "solved"
+          },
+          {
+            "type": "string",
+            "const": "solvedWithHints"
+          },
+          {
+            "type": "string",
+            "const": "movedOn"
+          },
+          {
+            "type": "string",
+            "const": "surrendered"
+          },
+          {
+            "type": "string",
+            "const": "dismissed"
+          }
+        ],
+        "description": "REQUIRED — the outcome: solved, solvedWithHints, movedOn, or surrendered — bare words, no quotes (dismissed is synthesized, never yours)."
+      },
+      "verdict": {
+        "type": "string",
+        "description": "REQUIRED — the plain-language verdict: what was credited, where it broke. On a wrong answer: localize the break, do NOT give the correction."
+      },
+      "rung": {
+        "anyOf": [
+          {
+            "type": "string",
+            "const": "R0"
+          },
+          {
+            "type": "string",
+            "const": "R1"
+          },
+          {
+            "type": "string",
+            "const": "R2"
+          },
+          {
+            "type": "string",
+            "const": "R3"
+          },
+          {
+            "type": "string",
+            "const": "R4"
+          },
+          {
+            "type": "string",
+            "const": "R5"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "REQUIRED — the hint-ladder rung the problem needed: R0 through R5, or null = no hint was given (bare, no quotes)."
+      },
+      "missClass": {
+        "anyOf": [
+          {
+            "type": "string",
+            "const": "cue"
+          },
+          {
+            "type": "string",
+            "const": "discrimination"
+          },
+          {
+            "type": "string",
+            "const": "execution"
+          },
+          {
+            "type": "string",
+            "const": "careless"
+          },
+          {
+            "type": "string",
+            "const": "structural"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "REQUIRED — the miss classification: cue, discrimination, execution, careless, or structural — or null = no miss (bare, no quotes)."
+      },
+      "retest": {
+        "type": "boolean",
+        "description": "REQUIRED — true marks the problem for a fresh-surface retest before the session ends."
+      }
+    }
+  }
+}

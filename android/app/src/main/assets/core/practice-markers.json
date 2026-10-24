@@ -1,0 +1,7 @@
+{
+  "ok": true,
+  "conclude": "Problem concluded. Say your closing words about the learner's work if useful, then END YOUR TURN — no further tool calls. The next problem is NEVER posed here: it waits for the learner's explicit go-ahead (a *Next problem* message, or their own words asking for the next one). Between problems, answer their questions about the concluded one.",
+  "next": "[NEXT PROBLEM] — the learner's explicit go-ahead: pose the next problem now per the selection rules, or wrap the session in text if the arc is complete.",
+  "thinking": "Your thinking",
+  "posed": "Problem posed — the turn ends here; the learner's thinking traces and answer commits arrive as labeled messages."
+}

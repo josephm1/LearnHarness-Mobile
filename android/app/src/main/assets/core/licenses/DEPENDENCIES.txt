@@ -1,0 +1,92 @@
+@mixmark-io/domino 2.2.0 — BSD-2-Clause
+https://github.com/mixmark-io/domino.git
+
+@mozilla/readability 0.6.0 — Apache-2.0
+https://github.com/mozilla/readability
+
+@noble/hashes 1.8.0 — MIT
+git+https://github.com/paulmillr/noble-hashes.git
+
+base64-js 1.5.1 — MIT
+git://github.com/beatgammit/base64-js.git
+
+boolbase 2.0.0 — ISC
+https://github.com/fb55/boolbase
+
+css-select 7.0.0 — BSD-2-Clause
+git://github.com/fb55/css-select.git
+
+css-what 8.0.0 — BSD-2-Clause
+https://github.com/fb55/css-what
+
+cssom 0.5.0 — MIT
+NV/CSSOM
+
+d3-dispatch 3.0.1 — ISC
+https://github.com/d3/d3-dispatch.git
+
+d3-force 3.0.0 — ISC
+https://github.com/d3/d3-force.git
+
+d3-quadtree 3.0.1 — ISC
+https://github.com/d3/d3-quadtree.git
+
+d3-timer 3.0.1 — ISC
+https://github.com/d3/d3-timer.git
+
+dom-serializer 2.0.0 — MIT
+git://github.com/cheeriojs/dom-serializer.git
+
+dom-serializer 3.1.1 — MIT
+git://github.com/cheeriojs/dom-serializer.git
+
+domelementtype 2.3.0 — BSD-2-Clause
+git://github.com/fb55/domelementtype.git
+
+domelementtype 3.0.0 — BSD-2-Clause
+git://github.com/fb55/domelementtype.git
+
+domhandler 5.0.3 — BSD-2-Clause
+git://github.com/fb55/domhandler.git
+
+domhandler 6.0.1 — BSD-2-Clause
+git://github.com/fb55/domhandler.git
+
+domutils 3.2.2 — BSD-2-Clause
+git://github.com/fb55/domutils.git
+
+domutils 4.0.2 — BSD-2-Clause
+git://github.com/fb55/domutils.git
+
+entities 4.5.0 — BSD-2-Clause
+git://github.com/fb55/entities.git
+
+entities 7.0.1 — BSD-2-Clause
+https://github.com/fb55/entities.git
+
+entities 8.1.0 — BSD-2-Clause
+https://github.com/fb55/entities.git
+
+fast-text-encoding 1.0.6 — Apache-2.0
+https://github.com/samthor/fast-text-encoding.git
+
+html-escaper 3.0.3 — MIT
+https://github.com/WebReflection/html-escaper.git
+
+htmlparser2 10.1.0 — MIT
+git://github.com/fb55/htmlparser2.git
+
+linkedom 0.18.13 — ISC
+git+https://github.com/WebReflection/linkedom.git
+
+nth-check 3.0.1 — BSD-2-Clause
+https://github.com/fb55/nth-check
+
+turndown 7.2.4 — MIT
+https://github.com/mixmark-io/turndown.git
+
+typebox 1.3.27 — MIT
+https://github.com/sinclairzx81/typebox
+
+uhyphen 0.2.0 — ISC
+git+https://github.com/WebReflection/uhyphen.git

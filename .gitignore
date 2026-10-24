@@ -1,0 +1,24 @@
+# Local credentials, records and configuration
+.env
+.env.*
+!.env.example
+auth.json
+data/
+*.jks
+*.keystore
+*.p12
+*.pem
+*.key
+local.properties
+# Build products and dependencies
+.gradle/
+**/build/
+node_modules/
+*.apk
+*.aab
+*.log
+*.hprof
+.DS_Store
+android/tools/original-core/generated-extraction.ts
+android/tools/original-core/generated-research.ts
+android/releases/

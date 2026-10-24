@@ -1,0 +1,27 @@
+package ai.learnharness.android;
+import android.content.Context;
+import android.util.AtomicFile;
+import org.json.*;
+import java.io.*;
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.util.*;
+
+/** Durable job records, separate from the UI-owned learning transaction. No credentials are stored here. */
+public final class JobStore {
+    private static final Object LOCK=new Object();private final AtomicFile file;private final Context context;
+    public JobStore(Context context){this(context,"jobs.json");}
+    JobStore(Context context,String name){this.context=context.getApplicationContext();file=new AtomicFile(new File(context.getFilesDir(),name));}
+    private JSONArray read()throws Exception{if(!file.getBaseFile().exists())return new JSONArray();try(InputStream in=file.openRead()){return new JSONArray(new String(ProviderClient.readBounded(in,16_000_000),StandardCharsets.UTF_8));}}
+    private void write(JSONArray rows)throws Exception{byte[] bytes=rows.toString(2).getBytes(StandardCharsets.UTF_8);if(bytes.length>16_000_000)throw new IOException("Job history exceeds 16 MB. Export or remove completed jobs.");FileOutputStream out=null;try{out=file.startWrite();out.write(bytes);file.finishWrite(out);}catch(Exception error){if(out!=null)file.failWrite(out);throw error;}}
+    public JSONArray list()throws Exception{synchronized(LOCK){return read();}}
+    public JSONObject get(String id)throws Exception{synchronized(LOCK){JSONArray rows=read();for(int i=0;i<rows.length();i++)if(rows.getJSONObject(i).getString("id").equals(id))return rows.getJSONObject(i);return null;}}
+    public JSONObject create(String session,String call,String kind,JSONObject input,JSONObject route)throws Exception{synchronized(LOCK){RoleConnections.validate(route);JSONArray rows=read();for(int i=0;i<rows.length();i++){JSONObject existing=rows.getJSONObject(i);if(existing.optString("chatId").equals(session) && existing.optString("toolCallId").equals(call))return existing;}
+        String now=Instant.now().toString();JSONObject job=new JSONObject().put("id","job_"+UUID.randomUUID()).put("chatId",session).put("toolCallId",call).put("kind",kind).put("input",input).put("route",route).put("status","staged").put("activity","Queued").put("searchEngine",SearchSettings.engine(context.getSharedPreferences("settings",0))).put("createdAt",now).put("updatedAt",now);rows.put(job);write(rows);return new JSONObject(job.toString());}}
+    public JSONObject update(String id,JSONObject patch)throws Exception{synchronized(LOCK){JSONArray rows=read();for(int i=0;i<rows.length();i++){JSONObject job=rows.getJSONObject(i);if(!job.getString("id").equals(id))continue;Iterator<String> keys=patch.keys();while(keys.hasNext()){String key=keys.next();if(Arrays.asList("id","kind","chatId","toolCallId","route","input").contains(key))throw new IOException("Job identity cannot be changed.");job.put(key,patch.get(key));}job.put("updatedAt",Instant.now().toString());write(rows);return job;}return null;}}
+    public boolean transition(String id,String expected,JSONObject patch)throws Exception{synchronized(LOCK){JSONObject current=get(id);if(current==null || !current.optString("status").equals(expected))return false;update(id,patch);return true;}}
+    public boolean activate(JSONArray sessions)throws Exception{synchronized(LOCK){Set<String> calls=new HashSet<>();for(int i=0;i<sessions.length();i++){JSONObject session=sessions.getJSONObject(i);JSONArray history=session.optJSONArray("agentHistory");for(int j=0;history!=null && j<history.length();j++){JSONObject message=history.getJSONObject(j);if(message.optString("role").equals("tool"))calls.add(session.getString("id")+"|"+message.optString("tool_call_id"));}}JSONArray rows=read();boolean changed=false,queued=false;for(int i=0;i<rows.length();i++){JSONObject job=rows.getJSONObject(i);if(job.optString("status").equals("staged") && calls.contains(job.getString("chatId")+"|"+job.getString("toolCallId"))){job.put("status","queued");changed=true;}if(job.optString("status").equals("queued"))queued=true;}if(changed)write(rows);return queued;}}
+    public JSONObject retry(String id)throws Exception{synchronized(LOCK){JSONObject previous=get(id);if(previous==null)throw new IOException("Job no longer exists.");if(!Arrays.asList("error","interrupted","cancelled").contains(previous.optString("status")))throw new IOException("Only failed, interrupted or cancelled jobs can be retried.");JSONObject next=create(previous.getString("chatId"),"retry_"+UUID.randomUUID(),previous.getString("kind"),previous.getJSONObject("input"),previous.getJSONObject("route"));return update(next.getString("id"),new JSONObject().put("status","queued").put("activity","Retry requested").put("retryOf",id));}}
+    public void interrupted()throws Exception{synchronized(LOCK){JSONArray rows=read();boolean changed=false;for(int i=0;i<rows.length();i++){JSONObject job=rows.getJSONObject(i);if(job.optString("status").equals("running")){job.put("status","interrupted").put("activity","Interrupted by Android; retry explicitly");changed=true;}}if(changed)write(rows);}}
+    public void remove(String id)throws Exception{synchronized(LOCK){JSONArray rows=read();for(int i=rows.length()-1;i>=0;i--)if(rows.getJSONObject(i).getString("id").equals(id)){String status=rows.getJSONObject(i).optString("status");if(status.equals("queued") || status.equals("running"))throw new IOException("Cancel the job before removing it.");rows.remove(i);}write(rows);}}
+}

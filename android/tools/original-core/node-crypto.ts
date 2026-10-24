@@ -1,0 +1,4 @@
+// Host adaptation only: SHA-256 is standard; randomness is supplied by Android SecureRandom.
+import {sha256} from '@noble/hashes/sha256';
+export function createHash(algorithm:string){if(algorithm!=='sha256')throw Error('Unsupported hash');const hash=sha256.create();return {update(value:string){hash.update(new TextEncoder().encode(value));return this;},digest(format:string){if(format!=='hex')throw Error('Unsupported digest encoding');return Array.from(hash.digest(),b=>b.toString(16).padStart(2,'0')).join('');}};}
+export function randomBytes(size:number){const host=globalThis as any,offset=host.__entropyOffset??0,hex=host.__entropyHex??'';if(offset+size*2>hex.length)throw Error('Native entropy exhausted');host.__entropyOffset=offset+size*2;const value=hex.slice(offset,offset+size*2);return {toString(format:string){if(format!=='hex')throw Error('Unsupported random encoding');return value;}};}

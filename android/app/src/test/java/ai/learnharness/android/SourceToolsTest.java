@@ -1,0 +1,9 @@
+package ai.learnharness.android;
+import org.json.*;import org.junit.Test;import static org.junit.Assert.*;
+public class SourceToolsTest {
+ private JSONObject session()throws Exception{return new JSONObject().put("sourceFiles",new JSONArray().put(new JSONObject("{id:'book1',title:'Physics.pdf',kind:'PDF',uri:'content://provider/book'}")).put(new JSONObject("{id:'book2',title:'Logic.epub',kind:'EPUB',uri:'content://provider/logic'}")));}
+ @Test public void listsOnlyVirtualPathsWithoutDocumentUris()throws Exception{String result=(String)SourceTools.executeMetadata(session(),"ls",new JSONObject());assertTrue(result.contains("book1/Physics.pdf"));assertFalse(result.contains("content://"));}
+ @Test public void fileGlobUsesNamesNotRegexInjection()throws Exception{String result=(String)SourceTools.executeMetadata(session(),"find",new JSONObject().put("pattern","*.pdf"));assertTrue(result.contains("Physics.pdf"));assertFalse(result.contains("Logic.epub"));assertTrue(((String)SourceTools.executeMetadata(session(),"find",new JSONObject().put("pattern",".*"))).startsWith("No linked file"));}
+ @Test public void arbitraryAndTraversalPathsCannotEscapeLinkedReferences()throws Exception{assertEquals(0,SourceTools.eligible(session(),"/data/data/private/secret").length());assertEquals(0,SourceTools.eligible(session(),"../../Physics.pdf").length());assertEquals(1,SourceTools.eligible(session(),"Physics.pdf").length());assertEquals(1,SourceTools.eligible(session(),"book1/Physics.pdf").length());}
+ @Test public void sourceReadBecomesPendingWithoutOpeningContent()throws Exception{JSONObject call=ToolProtocol.call("read1","read","{\"path\":\"Physics.pdf\"}");JSONObject pending=SourceTools.pending(session(),call,new JSONObject().put("path","Physics.pdf"));assertEquals("source",pending.getString("kind"));assertEquals(1,pending.getJSONArray("candidates").length());assertFalse(pending.has("content"));}
+}

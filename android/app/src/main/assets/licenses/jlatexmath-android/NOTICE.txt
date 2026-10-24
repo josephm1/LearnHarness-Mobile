@@ -1,0 +1,4 @@
+JLatexMath-Android 0.2.0 — https://github.com/noties/jlatexmath-android
+Original JLaTeXMath copyrights and GPL-2.0-or-later with linking exception are preserved in LICENSE and COPYING.
+The unmodified runtime AAR includes font licence texts under assets/org/scilab/forge/jlatexmath/fonts/licences/.
+Markwon core, ext-latex and inline-parser 4.6.2 — Apache-2.0, https://github.com/noties/Markwon

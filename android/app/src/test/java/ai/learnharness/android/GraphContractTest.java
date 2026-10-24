@@ -1,0 +1,11 @@
+package ai.learnharness.android;
+import org.json.*;import org.junit.Test;import static org.junit.Assert.*;
+public class GraphContractTest {
+ private JSONObject graph()throws Exception{return new JSONObject("{nodes:[{id:'a',name:'A',statement:'A is true.',createdAt:'now',aliases:[],provenance:[{chatId:'source',messageId:'m1'}]},{id:'b',name:'B',statement:'B follows.',createdAt:'now',aliases:[],provenance:[{chatId:'source',messageId:'m2'}]}],chains:[{id:'arg_ab',premises:['a'],conclusion:'b',createdAt:'now',provenance:[{chatId:'source',messageId:''}]}],coverage:[],checkpoints:[],sources:[],positions:{a:{x:1,y:2}}}");}
+ @Test public void ledgerAllowsRepeatedNodeAndChainAssertions()throws Exception{JSONObject g=graph();g.getJSONArray("nodes").put(new JSONObject(g.getJSONArray("nodes").getJSONObject(0).toString()));g.getJSONArray("chains").put(new JSONObject(g.getJSONArray("chains").getJSONObject(0).toString()));GraphContract.validate(g);}
+ @Test(expected=JSONException.class)public void rejectsMissingPremise()throws Exception{JSONObject g=graph();g.getJSONArray("chains").getJSONObject(0).put("premises",new JSONArray().put("missing"));GraphContract.validate(g);}
+ @Test(expected=JSONException.class)public void rejectsSelfPremise()throws Exception{JSONObject g=graph();g.getJSONArray("chains").getJSONObject(0).put("premises",new JSONArray().put("b"));GraphContract.validate(g);}
+ @Test(expected=JSONException.class)public void rejectsChainIdWithDifferentIdentity()throws Exception{JSONObject g=graph();g.getJSONArray("chains").put(new JSONObject(g.getJSONArray("chains").getJSONObject(0).toString()).put("premises",new JSONArray().put("b")).put("conclusion","a"));GraphContract.validate(g);}
+ @Test(expected=JSONException.class)public void rejectsInvalidCoverageFingerprint()throws Exception{JSONObject g=graph();g.getJSONArray("coverage").put(new JSONObject("{chatId:'source',fp:'not-a-fingerprint',tokens:1,foldedAt:'now'}"));GraphContract.validate(g);}
+ @Test public void backupValidationIncludesGraphReferences()throws Exception{JSONObject records=Records.empty().put("graph",graph());Records.validate(records);records.getJSONObject("graph").getJSONArray("nodes").remove(0);try{Records.validate(records);fail();}catch(JSONException expected){assertTrue(expected.getMessage().contains("premise"));}}
+}

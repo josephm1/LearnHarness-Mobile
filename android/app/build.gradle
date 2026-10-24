@@ -1,0 +1,55 @@
+plugins { id 'com.android.application' }
+android {
+    namespace 'ai.learnharness.android'
+    compileSdk 36
+    defaultConfig {
+        applicationId 'ai.learnharness.android'
+        minSdk 26
+        targetSdk 35
+        versionCode 12
+        versionName '0.6.3'
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+    }
+    buildFeatures { buildConfig true }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+    testOptions { unitTests.returnDefaultValues = true }
+}
+dependencies {
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+    implementation 'androidx.javascriptengine:javascriptengine:1.1.1'
+    implementation 'com.google.re2j:re2j:1.8'
+    implementation 'com.tom-roush:pdfbox-android:2.0.27.0'
+    implementation 'org.jsoup:jsoup:1.18.3'
+    implementation 'io.noties.markwon:core:4.6.2'
+    implementation 'io.noties.markwon:ext-latex:4.6.2'
+    implementation 'io.noties.markwon:inline-parser:4.6.2'
+    implementation 'io.noties.markwon:ext-tables:4.6.2'
+    implementation 'io.noties.markwon:ext-strikethrough:4.6.2'
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'com.google.android.material:material:1.13.0'
+    androidTestImplementation 'androidx.test:runner:1.5.0'
+    androidTestImplementation 'androidx.test.ext:junit:1.1.5'
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20240303'
+}
+
+// Package the upstream prompt composition verbatim; Android UI behavior never edits it.
+def upstreamPromptRoot = rootProject.file('../src/agent')
+def generatedPromptAssets = layout.buildDirectory.dir('generated/promptAssets')
+android.sourceSets.main.assets.srcDir(generatedPromptAssets)
+tasks.register('generateOriginalPrompts') {
+    inputs.files(fileTree(upstreamPromptRoot) { include 'system-prompt.md', 'prompts/shared/*.md', 'prompts/teacher/*.md', 'prompts/prober/*.md', 'prompts/practice/*.md' })
+    outputs.dir(generatedPromptAssets)
+    doLast {
+        def output = generatedPromptAssets.get().dir('prompts').asFile
+        output.mkdirs()
+        ['teacher','prober','practice'].each { role ->
+            def segments = []
+            if (role != 'practice') segments << new File(upstreamPromptRoot,'system-prompt.md')
+            segments.addAll(new File(upstreamPromptRoot,"prompts/${role}").listFiles().findAll { it.name ==~ /\d+-[\w.-]+\.md/ }.sort { it.name })
+            segments.addAll(new File(upstreamPromptRoot,'prompts/shared').listFiles().findAll { (it.name ==~ /\d+-[\w.-]+\.md/) && (role != 'practice' || ['10-voice.md','15-accuracy.md','16-mental-model.md','40-formatting.md'].contains(it.name)) }.sort { it.name })
+            new File(output,"${role}.txt").setText(segments.collect { it.getText('UTF-8').trim() }.findAll { !it.isEmpty() }.join('\n\n---\n\n'),'UTF-8')
+        }
+    }
+}
+tasks.named('preBuild').configure { dependsOn('generateOriginalPrompts') }

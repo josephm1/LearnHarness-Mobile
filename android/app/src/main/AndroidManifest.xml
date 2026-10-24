@@ -1,0 +1,20 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <application android:theme="@style/Theme.LearnHarness" android:label="LearnHarness" android:icon="@drawable/ic_book" android:allowBackup="false" android:dataExtractionRules="@xml/data_extraction_rules" android:usesCleartextTraffic="true" android:supportsRtl="true">
+        <service android:name=".JobService" android:exported="false" android:foregroundServiceType="dataSync" />
+        <service android:name=".SignInService" android:exported="false" android:foregroundServiceType="dataSync" />
+        <activity android:name=".GraphActivity" android:exported="false" />
+        <activity android:name=".InteractiveActivity" android:exported="false" />
+        <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTask" android:windowSoftInputMode="adjustResize" android:configChanges="orientation|screenSize|keyboardHidden">
+            <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="learnharness" android:host="signin-complete" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

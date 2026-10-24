@@ -1,0 +1,30 @@
+package ai.learnharness.android;
+import okhttp3.*;
+import org.json.*;
+import java.io.*;
+import java.net.*;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
+import java.util.concurrent.TimeUnit;
+
+/** Bounded public web reads; search credentials go only to the selected search service. */
+public final class ResearchWeb implements AutoCloseable {
+    public record Page(String url,int status,String mime,String text){}
+    private final OkHttpClient client;private volatile Call active;
+    public ResearchWeb(){client=new OkHttpClient.Builder().connectTimeout(20,TimeUnit.SECONDS).readTimeout(30,TimeUnit.SECONDS).callTimeout(40,TimeUnit.SECONDS).followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false).proxy(Proxy.NO_PROXY).dns(host->{List<InetAddress> addresses=Dns.SYSTEM.lookup(host);for(InetAddress address:addresses)if(!publicAddress(address))throw new UnknownHostException("Web research only reads public internet addresses");return addresses;}).build();}
+    public static boolean publicAddress(InetAddress address){if(address.isAnyLocalAddress() || address.isLoopbackAddress() || address.isLinkLocalAddress() || address.isSiteLocalAddress() || address.isMulticastAddress())return false;byte[] bytes=address.getAddress();if(bytes.length==4){int a=bytes[0]&255,b=bytes[1]&255;return a!=0 && a!=10 && a!=127 && a<224 && !(a==100 && b>=64 && b<=127) && !(a==169 && b==254) && !(a==172 && b>=16 && b<=31) && !(a==192 && (b==168 || b==0)) && !(a==198 && (b==18 || b==19));}return (bytes[0]&0xfe)!=0xfc && (bytes[0]&255)!=0xff;}
+    public static HttpUrl publicUrl(String raw)throws IOException{HttpUrl url=HttpUrl.parse(raw);if(url==null || (!url.scheme().equals("https") && !url.scheme().equals("http")) || !url.username().isEmpty() || !url.password().isEmpty())throw new IOException("Research requires a public HTTP or HTTPS URL without credentials.");String host=url.host().toLowerCase(Locale.ROOT);if(host.equals("localhost") || host.endsWith(".localhost") || host.endsWith(".local"))throw new IOException("Local network URLs are unavailable to web research.");return url;}
+    public Page fetch(String raw)throws Exception{HttpUrl url=publicUrl(raw);for(int redirect=0;redirect<6;redirect++){
+        Request request=new Request.Builder().url(url).header("User-Agent","LearnHarness-Android/0.6 public research").header("Accept","text/html,application/xhtml+xml,text/plain,text/markdown,application/pdf").header("Accept-Language","en-US,en;q=0.9").build();
+        try(Response response=execute(request)){if(response.isRedirect()){String next=response.header("Location");HttpUrl resolved=next==null?null:url.resolve(next);if(resolved==null)throw new IOException("The page returned an invalid redirect.");url=publicUrl(resolved.toString());continue;}if(!response.isSuccessful())throw new IOException("Web page returned HTTP "+response.code());String mime=response.header("Content-Type","").toLowerCase(Locale.ROOT);if(mime.contains("application/pdf"))return new Page(url.toString(),response.code(),mime,"");if(mime.matches(".*(image/|audio/|video/|zip|octet-stream).*"))throw new IOException("Unsupported page content type.");ResponseBody body=response.body();if(body==null)throw new IOException("The page was empty.");if(body.contentLength()>5*1024*1024)throw new IOException("Page exceeds 5 MB.");byte[] bytes=ProviderClient.readBounded(body.byteStream(),5*1024*1024);java.nio.charset.Charset charset=body.contentType()==null?StandardCharsets.UTF_8:body.contentType().charset(StandardCharsets.UTF_8);return new Page(url.toString(),response.code(),mime,new String(bytes,charset));}
+    }throw new IOException("Too many web redirects.");}
+    public JSONArray search(String engine,String key,String query,int count)throws Exception{
+        if(key.trim().isEmpty())throw new IOException("Configure a Tavily or Brave search API key first.");if(query.trim().isEmpty() || query.length()>1000)throw new IOException("Invalid search query length.");int limit=Math.max(1,Math.min(10,count));Request request;
+        if(engine.equals("tavily"))request=new Request.Builder().url("https://api.tavily.com/search").header("Authorization","Bearer "+key).post(RequestBody.create(new JSONObject().put("query",query).put("max_results",limit).toString(),MediaType.get("application/json"))).build();
+        else if(engine.equals("brave"))request=new Request.Builder().url(HttpUrl.get("https://api.search.brave.com/res/v1/web/search").newBuilder().addQueryParameter("q",query).addQueryParameter("count",String.valueOf(limit)).build()).header("X-Subscription-Token",key).header("Accept","application/json").build();else throw new IOException("Choose Tavily or Brave search.");
+        try(Response response=execute(request)){if(!response.isSuccessful())throw new IOException("Search provider returned HTTP "+response.code()+". Check its key and allowance.");if(response.body()==null)throw new IOException("Empty search response.");JSONObject data=new JSONObject(new String(ProviderClient.readBounded(response.body().byteStream(),2_000_000),StandardCharsets.UTF_8));JSONArray rows=engine.equals("tavily")?data.optJSONArray("results"):data.optJSONObject("web")==null?null:data.getJSONObject("web").optJSONArray("results"),hits=new JSONArray();for(int i=0;rows!=null && i<rows.length() && hits.length()<limit;i++){JSONObject row=rows.getJSONObject(i);String url=row.optString("url");if(url.isEmpty())continue;String snippet=row.optString(engine.equals("tavily")?"content":"description").replace('\n',' ');hits.put(new JSONObject().put("title",row.optString("title",url)).put("url",url).put("snippet",snippet.substring(0,Math.min(500,snippet.length()))));}return hits;}
+    }
+    private Response execute(Request request)throws IOException{Call call=client.newCall(request);active=call;return call.execute();}
+    public void cancel(){Call call=active;if(call!=null)call.cancel();}
+    @Override public void close(){cancel();client.connectionPool().evictAll();client.dispatcher().executorService().shutdown();}
+}

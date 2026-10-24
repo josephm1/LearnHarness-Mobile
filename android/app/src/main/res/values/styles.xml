@@ -1,0 +1,45 @@
+<resources>
+    <style name="WhiteSurfaces">
+        <item name="colorSurface">#FFFFFF</item>
+        <item name="colorSurfaceVariant">#FFFFFF</item>
+        <item name="colorSurfaceContainerLow">#FFFFFF</item>
+        <item name="colorSurfaceContainer">#FFFFFF</item>
+        <item name="colorSurfaceContainerHigh">#FFFFFF</item>
+        <item name="colorSurfaceContainerHighest">#FFFFFF</item>
+        <item name="android:colorBackground">#FFFFFF</item>
+        <item name="android:windowBackground">#FFFFFF</item>
+    </style>
+    <style name="CompactToolbarTitle" parent="TextAppearance.Material3.TitleMedium"><item name="android:textSize">18sp</item></style>
+    <style name="CompactToolbarSubtitle" parent="TextAppearance.Material3.BodySmall"><item name="android:textSize">12sp</item></style>
+    <style name="CompactNavigationLabel" parent="TextAppearance.Material3.LabelSmall"><item name="android:textSize">11sp</item></style>
+    <style name="Theme.LearnHarness" parent="Theme.Material3.Light.NoActionBar">
+        <item name="colorPrimary">#315E53</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+        <item name="colorSecondary">#315E53</item>
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowBackground">#FFFFFF</item>
+        <item name="colorSurface">#FFFFFF</item>
+        <item name="colorSurfaceContainerLow">#FFFFFF</item>
+        <item name="colorSurfaceContainer">#FFFFFF</item>
+        <item name="colorSurfaceContainerHigh">#FFFFFF</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:statusBarColor">#FFFFFF</item>
+        <item name="android:navigationBarColor">#FFFFFF</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
+    <style name="Theme.LearnHarness.Eink" parent="Theme.LearnHarness">
+        <item name="colorPrimary">#000000</item>
+        <item name="colorSecondary">#000000</item>
+        <item name="colorOnSurface">#000000</item>
+        <item name="colorOnSurfaceVariant">#000000</item>
+        <item name="colorSurface">#FFFFFF</item>
+        <item name="colorSurfaceVariant">#FFFFFF</item>
+        <item name="colorSurfaceContainer">#FFFFFF</item>
+        <item name="colorSurfaceContainerHigh">#FFFFFF</item>
+        <item name="colorSurfaceContainerHighest">#FFFFFF</item>
+        <item name="colorOutline">#000000</item>
+        <item name="colorOutlineVariant">#000000</item>
+        <item name="colorControlHighlight">#00000000</item>
+        <item name="android:windowAnimationStyle">@null</item>
+    </style>
+</resources>
