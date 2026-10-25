@@ -27,7 +27,7 @@ ${selector} :is(p,span,label,legend,h1,h2,h3,h4,h5,h6,output,a,button,input,sele
  color:#000!important;
 }
 ${selector} :is(button,input:not([type=checkbox]):not([type=radio]),select,textarea,[role=button],[role=slider]) {
- min-height:48px;min-width:48px;font:inherit;opacity:1!important;border:1px solid #000;
+ min-height:48px;min-width:48px;font:inherit;border-radius:12px;opacity:1!important;border:1px solid #000;
 }
 ${selector} input[type=range] {appearance:none;-webkit-appearance:none;border:0!important;min-width:160px;padding:0;accent-color:#000}
 ${selector} input[type=range]::-webkit-slider-runnable-track {height:2px;background:#000;border:0}

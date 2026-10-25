@@ -12,6 +12,10 @@
     <style name="CompactToolbarTitle" parent="TextAppearance.Material3.TitleMedium"><item name="android:textSize">18sp</item></style>
     <style name="CompactToolbarSubtitle" parent="TextAppearance.Material3.BodySmall"><item name="android:textSize">12sp</item></style>
     <style name="CompactNavigationLabel" parent="TextAppearance.Material3.LabelSmall"><item name="android:textSize">11sp</item></style>
+    <style name="EinkToolbarTitle" parent="CompactToolbarTitle">
+        <item name="fontFamily">@font/eink_outfit</item><item name="android:fontFamily">@font/eink_outfit</item><item name="android:textStyle">bold</item><item name="android:textSize">17sp</item>
+    </style>
+    <style name="EinkSettingsTitle" parent="EinkToolbarTitle"><item name="android:textSize">24sp</item></style>
     <style name="Theme.LearnHarness" parent="Theme.Material3.Light.NoActionBar">
         <item name="colorPrimary">#315E53</item>
         <item name="colorOnPrimary">#FFFFFF</item>
@@ -28,6 +32,8 @@
         <item name="android:windowActionModeOverlay">true</item>
     </style>
     <style name="Theme.LearnHarness.Eink" parent="Theme.LearnHarness">
+        <item name="android:fontFamily">@font/eink_outfit</item>
+        <item name="fontFamily">@font/eink_outfit</item>
         <item name="colorPrimary">#000000</item>
         <item name="colorSecondary">#000000</item>
         <item name="colorOnSurface">#000000</item>
@@ -41,5 +47,7 @@
         <item name="colorOutlineVariant">#000000</item>
         <item name="colorControlHighlight">#00000000</item>
         <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:windowElevation">0dp</item>
+        <item name="android:backgroundDimEnabled">false</item>
     </style>
 </resources>

@@ -9,3 +9,7 @@ The source snapshot and uncompressed APK contents were checked for private-key m
 The release APK is non-debuggable and uses a dedicated RSA signing certificate with the generic subject `CN=LearnHarness Mobile`. Its signature is verified with Android SDK apksigner. Private signing material is held outside the repository.
 
 The clean source snapshot builds the release APK and passes 116 JVM tests and Android release lint. Prior emulator instrumentation and UI checks are recorded in the validation report. No assertion of complete upstream feature parity is made.
+
+## E-ink interface and voice adaptation
+
+The updated e-ink interface uses Agora’s grouped settings, chat typography and composer patterns. Native Android and API speech implementations are adapted from Agora’s `AndroidVoiceRecognizer`, `VoiceDraftTarget`, `ApiVoiceRecorder` and `AudioTranscriptionClient`. The bundled MiOutfit variable font includes Copyright 2021 The Outfit Project Authors (https://github.com/Outfitio/Outfit-Fonts) and is licensed under SIL OFL 1.1; the complete notice is packaged as `android/app/src/main/assets/licenses/OUTFIT-OFL.txt`. Device screenshots and local preview APKs remain outside tracked source.

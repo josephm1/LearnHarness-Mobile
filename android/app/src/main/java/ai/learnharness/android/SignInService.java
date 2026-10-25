@@ -13,7 +13,7 @@ public final class SignInService extends Service {
         super.onCreate();
         NotificationManager notifications=getSystemService(NotificationManager.class);
         notifications.createNotificationChannel(new NotificationChannel(CHANNEL,"ChatGPT sign-in",NotificationManager.IMPORTANCE_LOW));
-        Intent back=new Intent(this,MainActivity.class).setAction(Intent.ACTION_VIEW).setData(android.net.Uri.parse("learnharness://signin-complete")).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        Intent back=new Intent(this,MainActivity.class).setAction(Intent.ACTION_VIEW).setData(android.net.Uri.parse(BuildConfig.SIGN_IN_SCHEME+"://signin-complete")).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
         PendingIntent returnToApp=PendingIntent.getActivity(this,51,back,PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE);
         PendingIntent cancel=PendingIntent.getService(this,52,new Intent(this,SignInService.class).setAction(CANCEL),PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE);
         Notification notification=new NotificationCompat.Builder(this,CHANNEL).setSmallIcon(R.drawable.ic_book).setContentTitle("Connecting to ChatGPT")
