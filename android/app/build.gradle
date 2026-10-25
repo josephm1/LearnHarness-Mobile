@@ -6,9 +6,22 @@ android {
         applicationId 'ai.learnharness.android'
         minSdk 26
         targetSdk 35
-        versionCode 12
-        versionName '0.6.3'
+        versionCode 13
+        versionName '0.7.0-preview'
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+        manifestPlaceholders = [appLabel:'LearnHarness', signInScheme:'learnharness']
+        buildConfigField 'String', 'SIGN_IN_SCHEME', '"learnharness"'
+        buildConfigField 'boolean', 'DEFAULT_EINK', 'false'
+    }
+    buildTypes {
+        preview {
+            initWith debug
+            applicationIdSuffix '.preview'
+            matchingFallbacks = ['debug']
+            manifestPlaceholders = [appLabel:'LearnHarness Preview', signInScheme:'learnharness-preview']
+            buildConfigField 'String', 'SIGN_IN_SCHEME', '"learnharness-preview"'
+            buildConfigField 'boolean', 'DEFAULT_EINK', 'true'
+        }
     }
     buildFeatures { buildConfig true }
     compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }

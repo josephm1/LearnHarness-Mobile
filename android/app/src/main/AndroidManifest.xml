@@ -1,11 +1,23 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <queries><intent><action android:name="android.speech.RecognitionService" /></intent></queries>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-    <application android:theme="@style/Theme.LearnHarness" android:label="LearnHarness" android:icon="@drawable/ic_book" android:allowBackup="false" android:dataExtractionRules="@xml/data_extraction_rules" android:usesCleartextTraffic="true" android:supportsRtl="true">
+    <application android:theme="@style/Theme.LearnHarness" android:label="${appLabel}" android:icon="@drawable/ic_book" android:allowBackup="false" android:dataExtractionRules="@xml/data_extraction_rules" android:usesCleartextTraffic="true" android:supportsRtl="true">
         <service android:name=".JobService" android:exported="false" android:foregroundServiceType="dataSync" />
         <service android:name=".SignInService" android:exported="false" android:foregroundServiceType="dataSync" />
         <activity android:name=".GraphActivity" android:exported="false" />
+        <provider android:name="androidx.core.content.FileProvider" android:authorities="${applicationId}.sharedfiles" android:exported="false" android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/shared_file_paths" />
+        </provider>
+        <activity android:name=".ShareActivity" android:exported="true" android:label="${appLabel}" android:configChanges="orientation|screenSize|keyboardHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" /><action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/*" /><data android:mimeType="application/pdf" /><data android:mimeType="application/epub+zip" /><data android:mimeType="application/octet-stream" />
+            </intent-filter>
+        </activity>
         <activity android:name=".InteractiveActivity" android:exported="false" />
         <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTask" android:windowSoftInputMode="adjustResize" android:configChanges="orientation|screenSize|keyboardHidden">
             <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
@@ -13,7 +25,7 @@
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="learnharness" android:host="signin-complete" />
+                <data android:scheme="${signInScheme}" android:host="signin-complete" />
             </intent-filter>
         </activity>
     </application>

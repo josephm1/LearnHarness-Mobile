@@ -7,7 +7,6 @@ import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
-import android.speech.RecognizerIntent;
 import android.text.InputType;
 import android.view.*;
 import android.widget.*;
@@ -41,7 +40,9 @@ public final class MainActivity extends AppCompatActivity {
     private android.content.SharedPreferences prefs;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final ProviderClient provider = new ProviderClient();
-    private LinearLayout root, content, composerHost;
+    private LinearLayout root, content, composerHost, preferenceGroup;
+    private View lastPreference;
+    private int preferenceCount;
     private View nav;
     private MaterialToolbar toolbar;
     private String settingsPage="";
@@ -64,13 +65,20 @@ public final class MainActivity extends AppCompatActivity {
     private androidx.appcompat.app.AlertDialog creationDialog;
     private com.google.android.material.textfield.TextInputEditText creationGoal;
     private String creationKind="";
-    private int transcriptPage = Integer.MAX_VALUE, questionIndex = 0;
-    private boolean eink, busy;
+    private int questionIndex = 0;
+    private boolean eink, busy, readingExpanded;
+    private String renderedLesson="",followLatestSession="";
+    private final Map<String,Integer> readingPositions=new HashMap<>();
+    private final Set<String> readingEnds=new HashSet<>();
     private volatile int requestGeneration = 0;
     private String operation = "", draft = "";
     private int ink, accent, paper, fontSize, surface, subtle;
     private EditText composer;
-    private static final int IMPORT_NOTES = 11, RESTORE = 12, EXPORT = 13, DICTATE = 14, ADD_DOCUMENT=15, IMPORT_TEMPLATE=16, OPEN_TEMPLATE=17, OPEN_GRAPH=18, ADD_TREE=19;
+    private AndroidVoiceTyping voiceTyping;
+    private ApiVoiceTyping apiVoiceTyping;
+    private androidx.appcompat.app.AlertDialog voiceDialog;
+    private final androidx.activity.result.ActivityResultLauncher<String> voicePermission=registerForActivityResult(new androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),granted->{if(granted)dictate();else Toast.makeText(this,"Microphone permission is needed for voice typing. Your draft is unchanged.",Toast.LENGTH_LONG).show();});
+    private static final int IMPORT_NOTES = 11, RESTORE = 12, EXPORT = 13, ADD_DOCUMENT=15, IMPORT_TEMPLATE=16, OPEN_TEMPLATE=17, OPEN_GRAPH=18, ADD_TREE=19;
     private static final String[] PROVIDERS = {"OpenAI compatible", "Anthropic", "Gemini", "OpenRouter", "DeepSeek"};
 
 
@@ -78,14 +86,14 @@ public final class MainActivity extends AppCompatActivity {
         streamPosted=false;
         if(isDestroyed() || !busy || streamGeneration!=requestGeneration)return;
         streamText=pendingStream;
-        if(liveReply!=null && !eink && (screen.equals("Learn") && selectedSession.equals(streamSession) || screen.equals("Practice") && selectedPractice.equals(streamPractice) && questionIndex==streamQuestion)){
-            boolean follow=lessonScroll!=null && !lessonScroll.canScrollVertically(1);
+        if(liveReply!=null && (screen.equals("Learn") && selectedSession.equals(streamSession) || screen.equals("Practice") && selectedPractice.equals(streamPractice) && questionIndex==streamQuestion)){
+            boolean follow=lessonScroll!=null && (!followLatestSession.isEmpty() && followLatestSession.equals(streamSession) || !lessonScroll.canScrollVertically(1));
             markdown.setMarkdown(liveReply,streamText);
             if(follow){NestedScrollView target=lessonScroll;target.post(()->target.fullScroll(View.FOCUS_DOWN));}
         }
     };
     @Override public void onCreate(Bundle state) {
-        if (getSharedPreferences("settings", MODE_PRIVATE).getBoolean("eink", false)) setTheme(R.style.Theme_LearnHarness_Eink);
+        if (getSharedPreferences("settings", MODE_PRIVATE).getBoolean("eink", BuildConfig.DEFAULT_EINK)) setTheme(R.style.Theme_LearnHarness_Eink);
         else DynamicColors.applyToActivityIfAvailable(this);
         super.onCreate(state);
         androidx.core.content.ContextCompat.registerReceiver(this,jobUpdates,new IntentFilter(JobService.CHANGED),androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED);
@@ -107,6 +115,7 @@ public final class MainActivity extends AppCompatActivity {
         getOnBackPressedDispatcher().addCallback(this, new androidx.activity.OnBackPressedCallback(true) {
             @Override public void handleOnBackPressed() {
                 captureDraft();
+                if(readingExpanded){setReadingExpanded(false);return;}
                 if(screen.equals("Settings") && !settingsPage.isEmpty())settingsPage="";
                 else if (screen.equals("Learn") && !selectedSession.isEmpty()){JSONObject current=records.find("sessions",selectedSession);if(current!=null && current.optString("kind").equals("practice"))screen="Practice";selectedSession="";}
                 else if (screen.equals("Practice") && !selectedPractice.isEmpty()) selectedPractice = "";
@@ -116,13 +125,14 @@ public final class MainActivity extends AppCompatActivity {
             }
         });
         if (state != null) {
-            screen = state.getString("screen", "Learn"); selectedSession = state.getString("session", "");
+            followLatestSession=state.getString("followLatestSession","");readingExpanded=state.getBoolean("readingExpanded",false);screen = state.getString("screen", "Learn"); selectedSession = state.getString("session", "");
             selectedPractice = state.getString("practice", ""); draft = state.getString("draft", "");
+            if(!selectedSession.isEmpty()){readingPositions.put(selectedSession,state.getInt("readingY",0));if(state.getBoolean("readingEnd",true))readingEnds.add(selectedSession);}
             documentTarget=state.getString("documentTarget","");settingsPage=state.getString("settingsPage","");confidencePercent=state.getInt("confidencePercent",50);confidenceTouched=state.getBoolean("confidenceTouched",false);
-            transcriptPage = state.getInt("page", Integer.MAX_VALUE); questionIndex = state.getInt("question", 0);
+            questionIndex = state.getInt("question", 0);
         }
-        if(getIntent().getData()!=null && "learnharness".equals(getIntent().getData().getScheme()) && "signin-complete".equals(getIntent().getData().getHost())){screen="Settings";settingsPage="AI connection";getIntent().setData(null);}
-        try { records = new Records(this); render();if(state!=null && !state.getString("creationKind","").isEmpty()){String restoredKind=state.getString("creationKind"),restoredGoal=state.getString("creationGoal","");new Handler(Looper.getMainLooper()).post(()->{if(!isFinishing() && !isDestroyed()){if(restoredKind.equals("practice"))showSessionCreator(true,restoredGoal);else{newSession();JSONObject restoredSession=records.find("sessions",selectedSession);if(restoredSession!=null)try{draft=restoredGoal;restoredSession.put("draft",draft);save();render();}catch(Exception error){error(error);}}}});} }
+        if(getIntent().getData()!=null && BuildConfig.SIGN_IN_SCHEME.equals(getIntent().getData().getScheme()) && "signin-complete".equals(getIntent().getData().getHost())){screen="Settings";settingsPage="AI connection";getIntent().setData(null);}
+        try { records = new Records(this); render();boolean incomingShare=receiveSharedContent(getIntent());if(!incomingShare && state!=null && !state.getString("creationKind","").isEmpty()){String restoredKind=state.getString("creationKind"),restoredGoal=state.getString("creationGoal","");new Handler(Looper.getMainLooper()).post(()->{if(!isFinishing() && !isDestroyed()){if(restoredKind.equals("practice"))showSessionCreator(true,restoredGoal);else{newSession();JSONObject restoredSession=records.find("sessions",selectedSession);if(restoredSession!=null)try{draft=restoredGoal;restoredSession.put("draft",draft);save();render();}catch(Exception error){error(error);}}}});} }
         catch (Exception e) {
             TextView text = new TextView(this); text.setPadding(28, 60, 28, 28);
             text.setText("Your learning file could not be read. It has been preserved. Close the app and recover learning.json from app storage before continuing.\n\n" + e.getClass().getSimpleName()); setContentView(text);
@@ -130,11 +140,12 @@ public final class MainActivity extends AppCompatActivity {
     }
     @Override protected void onSaveInstanceState(Bundle out) {
         captureDraft();out.putString("creationKind",creationKind);out.putString("creationGoal",creationGoal==null?"":creationGoal.getText().toString());super.onSaveInstanceState(out);
-        out.putString("screen", screen); out.putString("session", selectedSession); out.putString("practice", selectedPractice);
+        if(lessonScroll!=null && !renderedLesson.isEmpty()){out.putInt("readingY",lessonScroll.getScrollY());out.putBoolean("readingEnd",!lessonScroll.canScrollVertically(1));}
+        out.putString("followLatestSession",followLatestSession);out.putBoolean("readingExpanded",readingExpanded);out.putString("screen", screen); out.putString("session", selectedSession); out.putString("practice", selectedPractice);
         out.putString("documentTarget",documentTarget);out.putString("settingsPage",settingsPage);out.putInt("confidencePercent",confidencePercent);out.putBoolean("confidenceTouched",confidenceTouched);
-        out.putString("draft", draft); out.putInt("page", transcriptPage); out.putInt("question", questionIndex);
+        out.putString("draft", draft); out.putInt("question", questionIndex);
     }
-    @Override protected void onDestroy() { if(creationDialog!=null)creationDialog.dismiss();unregisterReceiver(jobUpdates);requestGeneration++; provider.cancel(); chatGptHttp.cancel(); worker.shutdownNow();mathWorker.shutdownNow();streamHandler.removeCallbacksAndMessages(null); super.onDestroy(); }
+    @Override protected void onDestroy() {cancelVoiceTyping(); if(creationDialog!=null)creationDialog.dismiss();unregisterReceiver(jobUpdates);requestGeneration++; provider.cancel(); chatGptHttp.cancel(); worker.shutdownNow();mathWorker.shutdownNow();streamHandler.removeCallbacksAndMessages(null); super.onDestroy(); }
     @Override public void onConfigurationChanged(android.content.res.Configuration config) { super.onConfigurationChanged(config); captureDraft(); render(); }
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
     private void captureDraft() {
@@ -147,8 +158,10 @@ public final class MainActivity extends AppCompatActivity {
         }
     }
     private void render() {
-        composer=null;nav=null;liveReply=null;lessonScroll=null;toolbarActions.clear();
-        eink=prefs.getBoolean("eink",false);fontSize=prefs.getInt("fontSize",16);
+        cancelVoiceTyping();
+        if(lessonScroll!=null && !renderedLesson.isEmpty()){readingPositions.put(renderedLesson,lessonScroll.getScrollY());if(!lessonScroll.canScrollVertically(1))readingEnds.add(renderedLesson);else readingEnds.remove(renderedLesson);}
+        composer=null;nav=null;liveReply=null;lessonScroll=null;preferenceGroup=null;lastPreference=null;preferenceCount=0;toolbarActions.clear();
+        eink=prefs.getBoolean("eink",BuildConfig.DEFAULT_EINK);fontSize=prefs.getInt("fontSize",16);
         ink=eink?Color.BLACK:MaterialColors.getColor(this,com.google.android.material.R.attr.colorOnSurface,Color.BLACK);
         paper=Color.WHITE;
         accent=eink?Color.BLACK:MaterialColors.getColor(this,androidx.appcompat.R.attr.colorPrimary,Color.rgb(49,94,83));
@@ -165,8 +178,9 @@ public final class MainActivity extends AppCompatActivity {
         if(Build.VERSION.SDK_INT>=27)getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR|View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
         toolbar=new MaterialToolbar(this);toolbar.setTitleTextAppearance(this,R.style.CompactToolbarTitle);toolbar.setSubtitleTextAppearance(this,R.style.CompactToolbarSubtitle);toolbar.setTitleTextColor(ink);toolbar.setSubtitleTextColor(subtle);toolbar.setBackgroundColor(paper);
         JSONObject session=records.find("sessions",selectedSession),practice=records.find("practice",selectedPractice);
-        boolean lesson=screen.equals("Learn") && session!=null;
+        boolean lesson=screen.equals("Learn") && session!=null;renderedLesson=lesson?selectedSession:"";if(lesson)prefs.edit().putLong("recent."+selectedSession,System.currentTimeMillis()).apply();if(!lesson)readingExpanded=false;
         boolean subpage=lesson || screen.equals("Practice")&&practice!=null || screen.equals("Settings")&&!settingsPage.isEmpty();
+        if(eink){toolbar.setTitleTextAppearance(this,screen.equals("Settings")?R.style.EinkSettingsTitle:R.style.EinkToolbarTitle);}
         toolbar.setTitle(lesson?session.optString("title"):screen.equals("Practice")&&practice!=null?practice.optString("title"):screen.equals("Settings")&&!settingsPage.isEmpty()?settingsPage:screen.equals("Learn")?"LearnHarness":screen);
         if(subpage){toolbar.setNavigationIcon(R.drawable.ic_back);toolbar.setNavigationIconTint(ink);toolbar.setNavigationContentDescription("Back");toolbar.setNavigationOnClickListener(v->getOnBackPressedDispatcher().onBackPressed());}
         toolbar.setOverflowIcon(androidx.appcompat.content.res.AppCompatResources.getDrawable(this,R.drawable.ic_more));
@@ -176,11 +190,11 @@ public final class MainActivity extends AppCompatActivity {
         AppBarLayout appBar=new AppBarLayout(this);appBar.setId(R.id.lesson_app_bar);appBar.setBackgroundColor(Color.WHITE);appBar.setElevation(0);appBar.setStateListAnimator(null);appBar.setLiftOnScroll(false);
         LinearLayout header=column();header.addView(toolbar,new LinearLayout.LayoutParams(-1,dp(56)));
         if(busy){status=label(operation,13,false);status.setPadding(dp(20),0,dp(20),dp(4));header.addView(status);menuAction("Cancel request",()->{requestGeneration++;provider.cancel();chatGptHttp.cancel();if(documentTask!=null)documentTask.cancel(true);busy=false;streamText="";render();});}
-        AppBarLayout.LayoutParams headerParams=new AppBarLayout.LayoutParams(-1,-2);headerParams.setScrollFlags(lesson && !eink?AppBarLayout.LayoutParams.SCROLL_FLAG_SCROLL|AppBarLayout.LayoutParams.SCROLL_FLAG_ENTER_ALWAYS|AppBarLayout.LayoutParams.SCROLL_FLAG_SNAP:0);appBar.addView(header,headerParams);
+        AppBarLayout.LayoutParams headerParams=new AppBarLayout.LayoutParams(-1,-2);headerParams.setScrollFlags(lesson?AppBarLayout.LayoutParams.SCROLL_FLAG_SCROLL|AppBarLayout.LayoutParams.SCROLL_FLAG_ENTER_ALWAYS|(eink?0:AppBarLayout.LayoutParams.SCROLL_FLAG_SNAP):0);appBar.addView(header,headerParams);
         readingArea.addView(appBar,new CoordinatorLayout.LayoutParams(-1,-2));
         NestedScrollView scroll=new NestedScrollView(this);scroll.setId(R.id.reading_scroll);lessonScroll=scroll;scroll.setFillViewport(true);scroll.setSmoothScrollingEnabled(!eink);scroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
         CoordinatorLayout.LayoutParams scrollParams=new CoordinatorLayout.LayoutParams(-1,-1);scrollParams.setBehavior(new AppBarLayout.ScrollingViewBehavior());
-        content=column();content.setPadding(dp(12),dp(4),dp(12),dp(8));scroll.addView(content);readingArea.addView(scroll,0,scrollParams);
+        content=column();content.setPadding(dp(eink?16:12),dp(eink?12:4),dp(eink?16:12),dp(eink?16:8));scroll.addView(content);readingArea.addView(scroll,0,scrollParams);
         composerHost=column();
         if(lesson){
             composerHost.setPadding(dp(8),dp(8),dp(8),dp(4));composerHost.setBackgroundColor(Color.WHITE);root.addView(composerHost);
@@ -188,36 +202,64 @@ public final class MainActivity extends AppCompatActivity {
         BottomNavigationView navigation=new BottomNavigationView(this);navigation.setBackgroundColor(Color.WHITE);navigation.setElevation(0);navigation.setItemIconSize(dp(22));navigation.setItemTextAppearanceActive(R.style.CompactNavigationLabel);navigation.setItemTextAppearanceInactive(R.style.CompactNavigationLabel);navigation.setId(R.id.bottom_navigation);navigation.setLabelVisibilityMode(NavigationBarView.LABEL_VISIBILITY_LABELED);navigation.setItemHorizontalTranslationEnabled(false);
         String[] destinations={"Learn","Practice","Library","Settings"};int[] destinationIds={R.id.nav_learn,R.id.nav_practice,R.id.nav_library,R.id.nav_settings};int[] icons={R.drawable.ic_learn,R.drawable.ic_practice,R.drawable.ic_library,R.drawable.ic_settings};
         for(int i=0;i<destinations.length;i++){navigation.getMenu().add(Menu.NONE,destinationIds[i],i,destinations[i]).setIcon(icons[i]);if(screen.equals(destinations[i]))navigation.setSelectedItemId(destinationIds[i]);}
-        if(eink){navigation.setBackground(outline(1));navigation.setElevation(0);navigation.setItemActiveIndicatorColor(ColorStateList.valueOf(Color.BLACK));navigation.setItemActiveIndicatorShapeAppearance(ShapeAppearanceModel.builder().setAllCornerSizes(0).build());navigation.setItemIconTintList(new ColorStateList(new int[][]{new int[]{android.R.attr.state_checked},new int[]{}},new int[]{Color.WHITE,Color.BLACK}));navigation.setItemTextColor(ColorStateList.valueOf(Color.BLACK));navigation.setItemRippleColor(ColorStateList.valueOf(Color.TRANSPARENT));}
+        if(eink){navigation.setBackgroundColor(paper);navigation.setElevation(0);navigation.setItemActiveIndicatorColor(ColorStateList.valueOf(Color.BLACK));navigation.setItemActiveIndicatorShapeAppearance(ShapeAppearanceModel.builder().setAllCornerSizes(dp(24)).build());navigation.setItemIconTintList(new ColorStateList(new int[][]{new int[]{android.R.attr.state_checked},new int[]{}},new int[]{Color.WHITE,Color.BLACK}));navigation.setItemTextColor(ColorStateList.valueOf(Color.BLACK));navigation.setItemRippleColor(ColorStateList.valueOf(Color.TRANSPARENT));}
         navigation.setOnItemSelectedListener(item->{captureDraft();save();screen=destinations[item.getOrder()];settingsPage="";render();return true;});
         navigation.setOnItemReselectedListener(item->{captureDraft();if(screen.equals("Learn"))selectedSession="";if(screen.equals("Practice"))selectedPractice="";settingsPage="";render();});
         nav=navigation;root.addView(navigation,new LinearLayout.LayoutParams(-1,-2));if(lesson)navigation.setVisibility(View.GONE);
         try{switch(screen){case "Learn":learn();break;case "Practice":practice();break;case "Library":library();break;default:settings();}}catch(Exception e){error(e);}
+        if(eink && lesson)lessonReadingControls();
+        if(eink && !lesson){
+            LinearLayout turns=row();MaterialButton previous=button("↑",()->stepReading(scroll,-1));MaterialButton next=button("↓",()->stepReading(scroll,1));
+            previous.setContentDescription("Previous screenful");next.setContentDescription("Next screenful");previous.setTextSize(24);next.setTextSize(24);previous.setStrokeWidth(0);next.setStrokeWidth(0);
+            turns.addView(previous,new LinearLayout.LayoutParams(0,dp(48),1));turns.addView(next,new LinearLayout.LayoutParams(0,dp(48),1));root.addView(turns,root.indexOfChild(navigation),new LinearLayout.LayoutParams(-1,dp(48)));
+            Runnable availability=()->{boolean canUp=scroll.canScrollVertically(-1),canDown=scroll.canScrollVertically(1);previous.setEnabled(canUp);next.setEnabled(canDown);turns.setVisibility(canUp||canDown?View.VISIBLE:View.GONE);};
+            scroll.setOnScrollChangeListener((View.OnScrollChangeListener)(view,x,y,oldX,oldY)->availability.run());scroll.post(availability);
+        }
         androidx.core.view.ViewCompat.requestApplyInsets(root);
     }
     private void menuAction(String title,Runnable action){int id=9000+toolbarActions.size();toolbarActions.put(id,action);toolbar.getMenu().add(Menu.NONE,id,Menu.NONE,title).setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);}
     private void preference(String title,String description,int icon,Runnable action){
         LinearLayout item=row();item.setPadding(dp(4),dp(12),dp(4),dp(12));item.setMinimumHeight(dp(72));
         if(icon!=0){ImageView image=new ImageView(this);image.setImageResource(icon);image.setImageTintList(ColorStateList.valueOf(subtle));LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(dp(24),dp(24));p.setMargins(0,0,dp(20),0);item.addView(image,p);}
-        LinearLayout copy=column();copy.addView(label(title,16,true));if(!description.isEmpty()){TextView detail=label(description,14,false);detail.setTextColor(subtle);copy.addView(detail);}item.addView(copy,new LinearLayout.LayoutParams(0,-2,1));
-        ImageView chevron=new ImageView(this);chevron.setImageResource(R.drawable.ic_chevron);chevron.setImageTintList(ColorStateList.valueOf(subtle));item.addView(chevron,new LinearLayout.LayoutParams(dp(20),dp(20)));
+        LinearLayout copy=column();TextView headline=label(title,16,!eink);if(eink){headline.setFontVariationSettings("'wght' 500");headline.setPadding(0,0,0,0);}copy.addView(headline);if(!description.isEmpty()){TextView detail=label(description,14,false);detail.setTextColor(subtle);if(eink)detail.setPadding(0,dp(3),0,0);copy.addView(detail);}item.addView(copy,new LinearLayout.LayoutParams(0,-2,1));
+        ImageView chevron=new ImageView(this);chevron.setImageResource(R.drawable.ic_chevron);chevron.setImageTintList(ColorStateList.valueOf(subtle));if(!eink)item.addView(chevron,new LinearLayout.LayoutParams(dp(20),dp(20)));
         item.setContentDescription(title+". "+description);item.setFocusable(true);item.setClickable(true);item.setOnClickListener(v->action.run());
-        if(eink)item.setBackground(outline(1));else{android.util.TypedValue value=new android.util.TypedValue();getTheme().resolveAttribute(android.R.attr.selectableItemBackground,value,true);item.setBackgroundResource(value.resourceId);}
-        content.addView(item,new LinearLayout.LayoutParams(-1,-2));
+        if(eink){item.setPadding(dp(16),dp(14),dp(16),dp(14));item.setBackground(preferenceShape(true,true));}else{android.util.TypedValue value=new android.util.TypedValue();getTheme().resolveAttribute(android.R.attr.selectableItemBackground,value,true);item.setBackgroundResource(value.resourceId);}
+        LinearLayout.LayoutParams itemParams=new LinearLayout.LayoutParams(-1,-2);
+        if(eink && preferenceGroup!=null){
+            if(lastPreference!=null)lastPreference.setBackground(preferenceShape(preferenceCount==1,false));
+            item.setBackground(preferenceShape(preferenceCount==0,true));itemParams.setMargins(0,0,0,dp(2));
+            preferenceGroup.addView(item,itemParams);lastPreference=item;preferenceCount++;
+        }else{if(eink)itemParams.setMargins(0,0,0,dp(10));content.addView(item,itemParams);}
     }
-    private MaterialButton primaryButton(String title,Runnable action){MaterialButton b=button(title,action);b.setBackgroundTintList(ColorStateList.valueOf(accent));int foreground=eink?Color.WHITE:MaterialColors.getColor(this,com.google.android.material.R.attr.colorOnPrimary,Color.WHITE);b.setTextColor(foreground);b.setIconTint(ColorStateList.valueOf(foreground));return b;}
+    private GradientDrawable preferenceShape(boolean first,boolean last){
+        GradientDrawable shape=new GradientDrawable();shape.setColor(paper);shape.setStroke(dp(1),ink);
+        float top=dp(first?24:5),bottom=dp(last?24:5);
+        shape.setCornerRadii(new float[]{top,top,top,top,bottom,bottom,bottom,bottom});return shape;
+    }
+    private void settingsGroup(String title){
+        if(!eink)return;
+        TextView heading=label(title,13,true);heading.setPadding(dp(16),dp(preferenceGroup==null?12:24),dp(16),dp(12));content.addView(heading);
+        preferenceGroup=column();lastPreference=null;preferenceCount=0;content.addView(preferenceGroup,new LinearLayout.LayoutParams(-1,-2));
+    }
+    private MaterialButton primaryButton(String title,Runnable action){MaterialButton b=button(title,action);b.setBackgroundTintList(ColorStateList.valueOf(eink?paper:accent));int foreground=eink?Color.BLACK:MaterialColors.getColor(this,com.google.android.material.R.attr.colorOnPrimary,Color.WHITE);b.setTextColor(foreground);b.setIconTint(ColorStateList.valueOf(foreground));return b;}
     private LinearLayout column() { LinearLayout l = new LinearLayout(this); l.setOrientation(LinearLayout.VERTICAL); return l; }
     private LinearLayout row() { LinearLayout l = new LinearLayout(this); l.setOrientation(LinearLayout.HORIZONTAL); l.setGravity(Gravity.CENTER_VERTICAL); return l; }
-    private GradientDrawable outline(int width){GradientDrawable d=new GradientDrawable();d.setColor(eink?paper:surface);d.setStroke(dp(eink?width:0),eink?ink:subtle);d.setCornerRadius(eink?0:dp(8));return d;}
+    private GradientDrawable outline(int width){GradientDrawable d=new GradientDrawable();d.setColor(eink?paper:surface);d.setStroke(dp(eink?width:0),eink?ink:subtle);d.setCornerRadius(dp(eink?20:8));return d;}
     private TextView richLabel(String text,int size,boolean strong){TextView view=label("",size,strong);markdown.setMarkdown(view,text);return view;}
-    private TextView label(String text,int size,boolean strong){TextView view=new com.google.android.material.textview.MaterialTextView(this);view.setText(text);view.setTextSize(size);view.setTextColor(ink);view.setLineSpacing(dp(3),1.06f);view.setPadding(0,dp(4),0,dp(4));if(strong)view.setTypeface(Typeface.DEFAULT,Typeface.BOLD);return view;}
-    private MaterialButton button(String title,Runnable action){MaterialButton b=new MaterialButton(this);b.setText(title);b.setTextSize(14);b.setAllCaps(false);b.setMinHeight(dp(48));b.setTextColor(accent);b.setIconTint(ColorStateList.valueOf(accent));b.setBackgroundTintList(ColorStateList.valueOf(eink?paper:Color.TRANSPARENT));b.setStrokeWidth(eink?dp(1):0);b.setStrokeColor(ColorStateList.valueOf(accent));b.setElevation(0);if(eink){b.setCornerRadius(0);b.setStateListAnimator(null);b.setRippleColor(ColorStateList.valueOf(Color.TRANSPARENT));}b.setOnClickListener(v->action.run());return b;}
+    private TextView label(String text,int size,boolean strong){TextView view=new com.google.android.material.textview.MaterialTextView(this);view.setText(text);view.setTextSize(size);view.setTextColor(ink);view.setLineSpacing(dp(3),1.06f);view.setPadding(0,dp(4),0,dp(4));if(eink){view.setTypeface(getResources().getFont(R.font.eink_outfit),strong?Typeface.BOLD:Typeface.NORMAL);view.setLineSpacing(0,1.45f);}else if(strong)view.setTypeface(Typeface.DEFAULT,Typeface.BOLD);return view;}
+    private MaterialButton button(String title,Runnable action){MaterialButton b=new MaterialButton(this);b.setText(title);b.setTextSize(14);b.setAllCaps(false);b.setMinHeight(dp(48));b.setTextColor(accent);b.setIconTint(ColorStateList.valueOf(accent));b.setBackgroundTintList(ColorStateList.valueOf(eink?paper:Color.TRANSPARENT));b.setStrokeWidth(eink?dp(1):0);b.setStrokeColor(ColorStateList.valueOf(accent));b.setElevation(0);if(eink){b.setCornerRadius(dp(24));b.setTypeface(getResources().getFont(R.font.eink_outfit),Typeface.BOLD);b.setStateListAnimator(null);b.setRippleColor(ColorStateList.valueOf(Color.TRANSPARENT));}b.setOnClickListener(v->action.run());return b;}
+    private void styleComposerIcon(MaterialButton button,boolean outlined){
+        if(!eink)return;
+        button.setInsetTop(0);button.setInsetBottom(0);button.setPadding(dp(12),0,dp(12),0);
+        button.setIconSize(dp(24));button.setCornerRadius(dp(24));button.setStrokeWidth(outlined?dp(1):0);
+    }
     private void action(String title,Runnable action){if(screen.equals("Settings"))preference(title,"",0,action);else content.addView(button(title,action));}
     private LinearLayout card(String title,CharSequence body){
-        MaterialCardView frame=new MaterialCardView(this);frame.setCardBackgroundColor(surface);frame.setCardElevation(0);frame.setRadius(eink?0:dp(8));frame.setStrokeWidth(eink?dp(2):0);frame.setStrokeColor(ink);
-        LinearLayout box=column();box.setPadding(dp(8),dp(6),dp(8),dp(6));frame.addView(box);
+        MaterialCardView frame=new MaterialCardView(this);frame.setCardBackgroundColor(surface);frame.setCardElevation(0);frame.setRadius(eink?0:dp(8));frame.setStrokeWidth(0);frame.setStrokeColor(ink);
+        LinearLayout box=column();box.setPadding(dp(eink?0:8),dp(eink?8:6),dp(eink?0:8),dp(eink?12:6));frame.addView(box);
         LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,-2);p.setMargins(0,dp(4),0,dp(6));content.addView(frame,p);
-        if(!title.isEmpty())box.addView(label(title,14,true));if(body.length()>0){TextView copy=label("",fontSize,false);markdown.setParsedMarkdown(copy,body instanceof android.text.Spanned?(android.text.Spanned)body:markdown.toMarkdown(body.toString()));copy.setTextIsSelectable(true);copy.setMovementMethod(android.text.method.LinkMovementMethod.getInstance());box.addView(copy);}return box;
+        if(!title.isEmpty())box.addView(label(title,eink?16:14,true));if(body.length()>0){TextView copy=label("",fontSize,false);markdown.setParsedMarkdown(copy,body instanceof android.text.Spanned?(android.text.Spanned)body:markdown.toMarkdown(body.toString()));copy.setTextIsSelectable(true);copy.setMovementMethod(android.text.method.LinkMovementMethod.getInstance());box.addView(copy);}return box;
     }
     private EditText input(String hint, String value, boolean multiline) {
         EditText v = new EditText(this); v.setTextColor(ink); v.setHintTextColor(eink ? ink : Color.DKGRAY); v.setTextSize(fontSize);
@@ -255,26 +297,13 @@ public final class MainActivity extends AppCompatActivity {
 
         JSONArray messages = session.getJSONArray("messages");
         if(messages.length()==0)card("Tutor","What do you want to learn?");
-        else if (eink) {
-            ArrayList<CharSequence> sheets = new ArrayList<>();
+        else {
             for (int i = 0; i < messages.length(); i++) {
-                JSONObject m = messages.getJSONObject(i);
-                for (CharSequence page : readingPages(markdown.toMarkdown(m.getString("content"))))
-                    sheets.add(android.text.TextUtils.concat((m.getString("role").equals("user") ? "YOUR THINKING" : "TUTOR") + "\n\n",page));
-            }
-            if (sheets.isEmpty()) sheets.add("Your lesson begins with a question about your goal.");
-            transcriptPage = Math.min(transcriptPage, sheets.size()-1); transcriptPage = Math.max(0, transcriptPage);
-            card("PAGE " + (transcriptPage+1) + " / " + sheets.size(), sheets.get(transcriptPage));
-            LinearLayout turns = row();
-            MaterialButton previous = button("← Previous", () -> { captureDraft(); transcriptPage--; render(); }); previous.setEnabled(transcriptPage > 0);
-            MaterialButton next = button("Next →", () -> { captureDraft(); transcriptPage++; render(); }); next.setEnabled(transcriptPage < sheets.size()-1);
-            turns.addView(previous, new LinearLayout.LayoutParams(0, -2, 1)); turns.addView(next, new LinearLayout.LayoutParams(0, -2, 1)); content.addView(turns);
-        } else {
-            for (int i = 0; i < messages.length(); i++) {
-                JSONObject m = messages.getJSONObject(i); card(m.getString("role").equals("user") ? "Your thinking" : "Tutor", markdown.toMarkdown(m.getString("content")));
+                JSONObject message=messages.getJSONObject(i);
+                if(eink)einkMessage(message);else card(message.getString("role").equals("user")?"Your thinking":"Tutor",markdown.toMarkdown(message.getString("content")));
             }
         }
-        if(!eink && busy && selectedSession.equals(streamSession)){
+        if(busy && selectedSession.equals(streamSession)){
             LinearLayout streaming=card("Tutor · writing…","");liveReply=label("",fontSize,false);markdown.setMarkdown(liveReply,streamText.isEmpty()?"Waiting for the first words…":streamText);streaming.addView(liveReply);
         }
         if(messages.length()>0 && !busy && session.optJSONObject("pendingQuestion")==null && !sessionConnectionReady(session)){
@@ -288,21 +317,26 @@ public final class MainActivity extends AppCompatActivity {
         }
         if(session.optJSONObject("planTree")!=null)menuAction("Learning plan",()->showPlan(session));
         draft=session.optString("draft",draft);
-        MaterialCardView composerSurface=new MaterialCardView(this);composerSurface.setId(R.id.composer_surface);composerSurface.setCardBackgroundColor(Color.WHITE);composerSurface.setRadius(dp(eink?0:24));composerSurface.setStrokeWidth(dp(eink?2:1));composerSurface.setStrokeColor(eink?ink:MaterialColors.getColor(this,com.google.android.material.R.attr.colorOutline,Color.DKGRAY));composerSurface.setCardElevation(0);composerSurface.setContentPadding(dp(8),dp(4),dp(8),dp(4));
+        MaterialCardView composerSurface=new MaterialCardView(this);composerSurface.setId(R.id.composer_surface);composerSurface.setCardBackgroundColor(Color.WHITE);composerSurface.setRadius(dp(eink?28:24));composerSurface.setStrokeWidth(dp(1));composerSurface.setStrokeColor(eink?ink:MaterialColors.getColor(this,com.google.android.material.R.attr.colorOutline,Color.DKGRAY));composerSurface.setCardElevation(0);composerSurface.setContentPadding(dp(8),dp(4),dp(8),dp(4));
         LinearLayout panel=column();composerSurface.addView(panel);composerHost.addView(composerSurface,new LinearLayout.LayoutParams(-1,-2));
         if(!session.optString("approvedExcerpts").isEmpty()){TextView ready=label("Approved passages ready · tap to remove",12,false);ready.setTextColor(accent);ready.setOnClickListener(v->{session.remove("approvedExcerpts");save();captureDraft();render();});panel.addView(ready);}
         TextInputLayout field=new TextInputLayout(this);field.setHintEnabled(false);field.setBoxBackgroundMode(TextInputLayout.BOX_BACKGROUND_NONE);
-        composer=new TextInputEditText(field.getContext());composer.setHint(session.optJSONObject("pendingQuestion")==null?"Message…":session.getJSONObject("pendingQuestion").optBoolean("needsReveal") && !session.getJSONObject("pendingQuestion").optBoolean("revealed")?"Thoughts while reading…":session.getJSONObject("pendingQuestion").optString("kind").equals("quiz")?"Reasoning (optional)…":"Your thinking…");composer.setText(draft);composer.setTextSize(fontSize);composer.setTextColor(ink);composer.setHintTextColor(eink?Color.BLACK:subtle);composer.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE|InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);composer.setMinLines(1);composer.setMaxLines(4);composer.setMinHeight(dp(48));composer.setPadding(dp(12),dp(8),dp(12),dp(8));composer.setBackground(null);field.addView(composer,new LinearLayout.LayoutParams(-1,-2));panel.addView(field,new LinearLayout.LayoutParams(-1,-2));
-        LinearLayout controls=row();
-        MaterialButton attach=button("",()->attachmentMenu(session));attach.setIconResource(R.drawable.ic_attach);attach.setContentDescription("Attach book or document");androidx.core.view.ViewCompat.setStateDescription(attach,(session.optJSONArray("documents")==null?0:session.optJSONArray("documents").length())+" linked; permission required before use");attach.setMinWidth(0);attach.setIconPadding(0);attach.setEnabled(!busy);controls.addView(attach,new LinearLayout.LayoutParams(dp(48),dp(48)));
-        if(messages.length()>0){
+        composer=new TextInputEditText(field.getContext());composer.setHint(session.optJSONObject("pendingQuestion")==null?"Message…":session.getJSONObject("pendingQuestion").optBoolean("needsReveal") && !session.getJSONObject("pendingQuestion").optBoolean("revealed")?"Thoughts while reading…":session.getJSONObject("pendingQuestion").optString("kind").equals("quiz")?"Reasoning (optional)…":"Your thinking…");composer.setText(draft);composer.setTextSize(fontSize);if(eink)composer.setTypeface(getResources().getFont(R.font.eink_outfit));composer.setTextColor(ink);composer.setHintTextColor(eink?Color.BLACK:subtle);composer.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE|InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);composer.setMinLines(1);composer.setMaxLines(4);composer.setMinHeight(dp(48));composer.setPadding(dp(12),dp(8),dp(12),dp(8));composer.setBackground(null);field.addView(composer,new LinearLayout.LayoutParams(-1,-2));panel.addView(field,new LinearLayout.LayoutParams(-1,-2));
+        LinearLayout controls=row();controls.setPadding(0,dp(4),0,dp(4));
+        MaterialButton attach=button("",()->attachmentMenu(session));attach.setIconResource(R.drawable.ic_attach);attach.setContentDescription("Attach book or document");androidx.core.view.ViewCompat.setStateDescription(attach,(session.optJSONArray("documents")==null?0:session.optJSONArray("documents").length())+" linked; permission required before use");styleComposerIcon(attach,false);attach.setMinWidth(0);attach.setIconPadding(0);attach.setEnabled(!busy);controls.addView(attach,new LinearLayout.LayoutParams(dp(48),dp(48)));
+        if(messages.length()>0 && eink){
+            MaterialButton confidenceChip=button(confidenceTouched?"Confidence · "+confidencePercent+"%":"Confidence",()->{});
+            confidenceChip.setTextSize(12);confidenceChip.setContentDescription("Optional confidence; tap to choose. Nothing is sent until adjusted.");
+            confidenceChip.setEnabled(!busy);confidenceChip.setOnClickListener(view->showConfidencePicker(confidenceChip));
+            LinearLayout.LayoutParams chipParams=new LinearLayout.LayoutParams(0,dp(48),1);chipParams.setMargins(dp(4),0,dp(8),0);controls.addView(confidenceChip,chipParams);
+        }else if(messages.length()>0){
         TextView confidenceLabel=label(confidenceTouched?confidencePercent+"%":"Confidence",11,false);confidenceLabel.setGravity(Gravity.CENTER_VERTICAL);confidenceLabel.setContentDescription("Optional confidence; nothing is sent until adjusted");controls.addView(confidenceLabel,new LinearLayout.LayoutParams(dp(64),dp(48)));
         com.google.android.material.slider.Slider confidence=new com.google.android.material.slider.Slider(this);confidence.setContentDescription("Optional confidence in your answer; adjust to include it");confidence.setValueFrom(0);confidence.setValueTo(100);confidence.setStepSize(10);confidence.setValue(confidencePercent);confidence.setTickVisible(false);confidence.setTrackHeight(dp(2));confidence.setThumbRadius(dp(6));confidence.setHaloRadius(dp(12));confidence.setLabelFormatter(value->Math.round(value)+"%");confidence.setEnabled(!busy);
         if(eink){confidence.setTickTintList(ColorStateList.valueOf(Color.BLACK));confidence.setTrackTintList(ColorStateList.valueOf(Color.BLACK));confidence.setTrackActiveTintList(ColorStateList.valueOf(Color.BLACK));confidence.setTrackInactiveTintList(ColorStateList.valueOf(Color.BLACK));confidence.setThumbTintList(ColorStateList.valueOf(Color.BLACK));confidence.setHaloTintList(ColorStateList.valueOf(Color.TRANSPARENT));}
         confidence.addOnChangeListener((slider,value,fromUser)->{if(fromUser){confidenceTouched=true;confidencePercent=Math.round(value);confidenceLabel.setText(confidencePercent+"%");}});controls.addView(confidence,new LinearLayout.LayoutParams(0,dp(48),1));
         }else controls.addView(new android.widget.Space(this),new LinearLayout.LayoutParams(0,dp(48),1));
-        MaterialButton mic=button("",this::dictate);mic.setIconResource(R.drawable.ic_mic);mic.setContentDescription("Dictate your thinking");mic.setMinWidth(0);mic.setIconPadding(0);controls.addView(mic,new LinearLayout.LayoutParams(dp(48),dp(48)));
-        MaterialButton send=primaryButton("",()->{if(busy){requestGeneration++;provider.cancel();chatGptHttp.cancel();if(documentTask!=null)documentTask.cancel(true);busy=false;streamText="";captureDraft();render();return;}submitReply(session);});send.setIconResource(busy?R.drawable.ic_stop:R.drawable.ic_up);send.setContentDescription(busy?"Stop response":messages.length()==1 && !session.has("agentHistory") && session.optJSONObject("pendingQuestion")==null?"Send saved goal":"Send reply");send.setMinWidth(0);send.setIconPadding(0);controls.addView(send,new LinearLayout.LayoutParams(dp(48),dp(48)));panel.addView(controls);
+        MaterialButton mic=button("",this::dictate);mic.setIconResource(R.drawable.ic_mic);mic.setContentDescription("Dictate your thinking");mic.setEnabled(!busy);styleComposerIcon(mic,true);mic.setMinWidth(0);mic.setIconPadding(0);controls.addView(mic,new LinearLayout.LayoutParams(dp(48),dp(48)));
+        MaterialButton send=primaryButton("",()->{if(busy){requestGeneration++;provider.cancel();chatGptHttp.cancel();if(documentTask!=null)documentTask.cancel(true);busy=false;streamText="";captureDraft();render();return;}submitReply(session);});send.setIconResource(busy?R.drawable.ic_stop:R.drawable.ic_up);send.setContentDescription(busy?"Stop response":messages.length()==1 && !session.has("agentHistory") && session.optJSONObject("pendingQuestion")==null?"Send saved goal":"Send reply");styleComposerIcon(send,true);send.setMinWidth(0);send.setIconPadding(0);controls.addView(send,new LinearLayout.LayoutParams(dp(48),dp(48)));panel.addView(controls);
         if(prefs.getBoolean("useChatGpt",false))menuAction("ChatGPT plan · Usage",this::openUsage);
         else menuAction(prefs.getString("provider",PROVIDERS[0])+" · Connection",()->{captureDraft();screen="Settings";settingsPage="AI connection";render();});
         menuAction("Continue or retry lesson",()->tutor(session));
@@ -315,34 +349,84 @@ public final class MainActivity extends AppCompatActivity {
         menuAction("Rename session",()->renameSession(session));
         menuAction("Delete session",()->deleteSession(session));
     }
+    private void showConfidencePicker(MaterialButton chip){
+        LinearLayout choices=column();choices.setPadding(dp(16),dp(8),dp(16),dp(8));
+        androidx.appcompat.app.AlertDialog dialog=materialDialog().setTitle("How confident are you?").setView(choices).setNegativeButton("Cancel",null).create();
+        for(int rowIndex=0;rowIndex<2;rowIndex++){
+            LinearLayout line=row();
+            for(int columnIndex=0;columnIndex<6;columnIndex++){
+                int choice=rowIndex*6+columnIndex;boolean unset=choice==11;
+                MaterialButton option=button(unset?"Not\nset":choice*10+"%",()->{
+                    confidenceTouched=!unset;confidencePercent=unset?50:choice*10;chip.setText(confidenceTouched?"Confidence · "+confidencePercent+"%":"Confidence");dialog.dismiss();
+                });
+                option.setTextSize(12);option.setMinWidth(0);option.setMinimumWidth(0);option.setPadding(0,0,0,0);option.setInsetTop(dp(2));option.setInsetBottom(dp(2));option.setMaxLines(2);option.setCornerRadius(dp(12));
+                boolean selected=unset?!confidenceTouched:confidenceTouched && confidencePercent==choice*10;option.setSelected(selected);
+                option.setBackgroundTintList(ColorStateList.valueOf(selected?ink:paper));option.setTextColor(selected?paper:ink);
+                option.setContentDescription(unset?"Confidence not set":choice*10+" percent confidence");
+                LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(0,dp(56),1);params.setMargins(dp(2),dp(2),dp(2),dp(2));line.addView(option,params);
+            }
+            choices.addView(line,new LinearLayout.LayoutParams(-1,-2));
+        }
+        dialog.show();
+    }
     private void exportLesson(JSONObject session){
         StringBuilder text=new StringBuilder(session.optString("title")+"\n\n");JSONArray messages=session.optJSONArray("messages");
         for(int i=0;messages!=null && i<messages.length();i++){JSONObject m=messages.optJSONObject(i);text.append(m.optString("role")).append("\n").append(m.optString("content")).append("\n\n");}export(text.toString(),"lesson.txt","text/plain");
     }
     private void renameSession(JSONObject session){EditText name=input("Session title",session.optString("title"),false);materialDialog().setTitle("Rename session").setView(name).setNegativeButton("Cancel",null).setPositiveButton("Save",(d,w)->{try{if(!name.getText().toString().trim().isEmpty())session.put("title",name.getText().toString().trim());save();render();}catch(Exception e){error(e);}}).show();}
-    private java.util.List<CharSequence> readingPages(CharSequence text){
-        java.util.List<CharSequence> pages=new ArrayList<>();
-        int width=Math.max(dp(100),dp(getResources().getConfiguration().screenWidthDp-76));
-        // Reserve system bars, compact toolbar/composer, page controls and heading.
-        // Measure with the actual Material text appearance, including the printed role.
-        int height=Math.max(dp(80),dp(getResources().getConfiguration().screenHeightDp-420));
-        String prefix="YOUR THINKING\n\n";
-        CharSequence rest=text;
-        while(rest.length()>0){
-            TextView sample=label("",fontSize,false);sample.setText(android.text.TextUtils.concat(prefix,rest));
-            sample.measure(View.MeasureSpec.makeMeasureSpec(width,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(0,View.MeasureSpec.UNSPECIFIED));
-            android.text.Layout layout=sample.getLayout();int end=rest.length();
-            if(sample.getMeasuredHeight()>height){
-                int line=layout.getLineForVertical(Math.max(0,height-sample.getPaddingTop()-sample.getPaddingBottom()));
-                if(layout.getLineBottom(line)>height-sample.getPaddingTop()-sample.getPaddingBottom())line--;
-                end=layout.getLineEnd(Math.max(0,line))-prefix.length();
-            }
-            end=Math.min(end,prefs.getInt("pageChars",1100));end=Math.max(1,Math.min(rest.length(),end));
-            if(end<rest.length() && Character.isHighSurrogate(rest.charAt(end-1)))end--;
-            if(end<=0)end=Math.min(rest.length(),Character.charCount(Character.codePointAt(rest,0)));
-            pages.add(rest.subSequence(0,end));rest=rest.subSequence(end,rest.length());
-        }
-        if(pages.isEmpty())pages.add("");return pages;
+    private void einkMessage(JSONObject message)throws JSONException{
+        if(!message.getString("role").equals("user")){card("",markdown.toMarkdown(message.getString("content")));return;}
+        MaterialCardView bubble=new MaterialCardView(this);bubble.setCardBackgroundColor(paper);bubble.setCardElevation(0);bubble.setRadius(dp(24));bubble.setStrokeWidth(dp(1));bubble.setStrokeColor(ink);
+        TextView text=richLabel(message.getString("content"),fontSize,false);text.setPadding(dp(16),dp(12),dp(16),dp(12));text.setTextIsSelectable(true);bubble.addView(text);
+        LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(Math.max(dp(160),dp((int)(getResources().getConfiguration().screenWidthDp*.84f))),-2);params.gravity=Gravity.END;params.setMargins(0,dp(8),0,dp(16));content.addView(bubble,params);
+    }
+    private void setReadingExpanded(boolean expanded){
+        readingExpanded=expanded;
+        View bar=findViewById(R.id.lesson_app_bar);if(bar!=null)bar.setVisibility(expanded?View.GONE:View.VISIBLE);
+        if(composerHost!=null)composerHost.setVisibility(expanded?View.GONE:View.VISIBLE);
+        MaterialButton toggle=findViewById(R.id.reading_expand);if(toggle!=null){toggle.setIconResource(expanded?R.drawable.ic_fullscreen_exit:R.drawable.ic_fullscreen);toggle.setContentDescription(expanded?"Exit reading mode":"Expand reading area");}
+    }
+    private int readingStep(NestedScrollView scroll){
+        android.graphics.Rect visible=new android.graphics.Rect();int viewport=scroll.getGlobalVisibleRect(visible)?visible.height():scroll.getHeight();
+        int line=Math.round(fontSize*getResources().getDisplayMetrics().scaledDensity*1.45f);
+        return EinkReading.step(viewport,line);
+    }
+    private void stepReading(NestedScrollView scroll,int direction){
+        stopFollowingLatest();
+        int delta=direction*readingStep(scroll);int[] consumed=new int[2];
+        scroll.startNestedScroll(androidx.core.view.ViewCompat.SCROLL_AXIS_VERTICAL,androidx.core.view.ViewCompat.TYPE_NON_TOUCH);
+        scroll.dispatchNestedPreScroll(0,delta,consumed,null,androidx.core.view.ViewCompat.TYPE_NON_TOUCH);
+        int before=scroll.getScrollY();scroll.scrollBy(0,delta-consumed[1]);int moved=scroll.getScrollY()-before;
+        scroll.dispatchNestedScroll(0,moved,0,delta-consumed[1]-moved,null,androidx.core.view.ViewCompat.TYPE_NON_TOUCH);scroll.stopNestedScroll(androidx.core.view.ViewCompat.TYPE_NON_TOUCH);
+    }
+    private MaterialButton readingIcon(int icon,String description,Runnable action){
+        MaterialButton button=button("",action);button.setIconResource(icon);button.setContentDescription(description);button.setIconSize(dp(24));button.setIconPadding(0);button.setMinWidth(0);button.setStrokeWidth(0);button.setInsetTop(0);button.setInsetBottom(0);button.setPadding(dp(12),0,dp(12),0);return button;
+    }
+    private void stopFollowingLatest(){followLatestSession="";updateFollowingLatest();}
+    private void updateFollowingLatest(){
+        MaterialButton latest=findViewById(R.id.reading_latest);if(latest==null)return;
+        boolean following=!followLatestSession.isEmpty() && followLatestSession.equals(selectedSession);
+        latest.setSelected(following);latest.setStrokeWidth(following?dp(1):0);
+        latest.setContentDescription(following?"Move to end; following new text":"Move to end");androidx.core.view.ViewCompat.setStateDescription(latest,following?"Following new text":"Follow off");
+    }
+    private void lessonReadingControls(){
+        NestedScrollView scroll=lessonScroll;LinearLayout turns=row();turns.setPadding(dp(12),0,dp(12),0);
+        MaterialButton expand=readingIcon(R.drawable.ic_fullscreen,"Expand reading area",()->{captureDraft();setReadingExpanded(!readingExpanded);});expand.setId(R.id.reading_expand);
+        MaterialButton latest=readingIcon(R.drawable.ic_latest,"Move to end",()->{followLatestSession=selectedSession;updateFollowingLatest();AppBarLayout bar=findViewById(R.id.lesson_app_bar);if(bar!=null)bar.setExpanded(false,false);scroll.post(()->scroll.fullScroll(View.FOCUS_DOWN));});latest.setId(R.id.reading_latest);
+        MaterialButton up=readingIcon(R.drawable.ic_up,"Previous screenful",()->stepReading(scroll,-1));
+        MaterialButton down=readingIcon(R.drawable.ic_down,"Next screenful",()->stepReading(scroll,1));
+        for(MaterialButton button:new MaterialButton[]{expand,latest,up,down})turns.addView(button,new LinearLayout.LayoutParams(0,dp(48),1));
+        root.addView(turns,root.indexOfChild(composerHost),new LinearLayout.LayoutParams(-1,dp(48)));
+        Runnable availability=()->{up.setEnabled(scroll.canScrollVertically(-1));down.setEnabled(scroll.canScrollVertically(1));updateFollowingLatest();};
+        scroll.setOnScrollChangeListener((View.OnScrollChangeListener)(view,x,y,oldX,oldY)->availability.run());
+        final float[] downY={0};final int slop=ViewConfiguration.get(this).getScaledTouchSlop();
+        scroll.setOnTouchListener((view,event)->{if(event.getActionMasked()==MotionEvent.ACTION_DOWN)downY[0]=event.getY();else if(event.getActionMasked()==MotionEvent.ACTION_MOVE && Math.abs(event.getY()-downY[0])>slop)stopFollowingLatest();return false;});
+        scroll.setOnGenericMotionListener((view,event)->{if(event.getActionMasked()==MotionEvent.ACTION_SCROLL)stopFollowingLatest();return false;});
+        scroll.setOnKeyListener((view,key,event)->{if(event.getAction()==KeyEvent.ACTION_DOWN && (key==KeyEvent.KEYCODE_PAGE_UP || key==KeyEvent.KEYCODE_PAGE_DOWN || key==KeyEvent.KEYCODE_DPAD_UP || key==KeyEvent.KEYCODE_DPAD_DOWN))stopFollowingLatest();return false;});
+        setReadingExpanded(readingExpanded);updateFollowingLatest();
+        View.OnLayoutChangeListener followLayout=(view,l,t,r,b,ol,ot,or,ob)->{if(selectedSession.equals(followLatestSession))scroll.post(()->scroll.fullScroll(View.FOCUS_DOWN));};
+        scroll.addOnLayoutChangeListener(followLayout);content.addOnLayoutChangeListener(followLayout);
+        scroll.post(()->{if(selectedSession.equals(followLatestSession) || !readingPositions.containsKey(selectedSession) || readingEnds.contains(selectedSession))scroll.fullScroll(View.FOCUS_DOWN);else scroll.scrollTo(0,readingPositions.get(selectedSession));availability.run();});
     }
     private void renderSourceRequest(JSONObject session)throws Exception{
         JSONObject pending=session.getJSONObject("pendingQuestion"),args=pending.getJSONObject("request");LinearLayout panel=card("Use a source?",pending.getString("tool")+" · "+args.optString("path")+(args.optString("pattern").isEmpty()?"":"\nFind: "+args.optString("pattern"))+"\n\nNo book content has been read or sent. Review a local passage and approve it, or continue without this source.");
@@ -363,7 +447,7 @@ public final class MainActivity extends AppCompatActivity {
         if(!question.optString("context").isEmpty()){TextView detail=label("",fontSize,false);markdown.setParsedMarkdown(detail,markdown.toMarkdown(question.optString("context")));card.addView(detail);}
         JSONArray options=question.getJSONArray("options");boolean multi=question.optString("mode").equals("multi-select");JSONArray selected=question.optJSONArray("selectedValues");if(selected==null){selected=new JSONArray();question.put("selectedValues",selected);}final JSONArray values=selected;
         LinearLayout choices=multi?column():new RadioGroup(this);if(!multi)((RadioGroup)choices).setOrientation(LinearLayout.VERTICAL);
-        for(int i=0;i<options.length();i++){JSONObject option=options.getJSONObject(i);String value=option.getString("value");CompoundButton button=multi?new com.google.android.material.checkbox.MaterialCheckBox(this):new com.google.android.material.radiobutton.MaterialRadioButton(this);button.setId(View.generateViewId());markdown.setParsedMarkdown(button,markdown.toMarkdown(option.getString("label")));button.setTextSize(fontSize);button.setTextColor(ink);button.setMinHeight(dp(48));button.setButtonTintList(ColorStateList.valueOf(accent));button.setEnabled(!busy);if(eink){button.setBackground(null);button.setStateListAnimator(null);}
+        for(int i=0;i<options.length();i++){JSONObject option=options.getJSONObject(i);String value=option.getString("value");CompoundButton button=multi?new com.google.android.material.checkbox.MaterialCheckBox(this):new com.google.android.material.radiobutton.MaterialRadioButton(this);button.setId(View.generateViewId());markdown.setParsedMarkdown(button,markdown.toMarkdown(option.getString("label")));button.setTextSize(fontSize);if(eink){button.setTypeface(getResources().getFont(R.font.eink_outfit));button.setLineSpacing(0,1.35f);button.setPadding(dp(4),dp(8),dp(8),dp(8));}button.setTextColor(ink);button.setMinHeight(dp(48));button.setButtonTintList(ColorStateList.valueOf(accent));button.setEnabled(!busy);if(eink){button.setBackground(null);button.setStateListAnimator(null);}
             for(int j=0;j<values.length();j++)if(value.equals(values.optString(j)))button.setChecked(true);
             button.setOnCheckedChangeListener((v,checked)->{try{if(!multi && checked){while(values.length()>0)values.remove(0);}if(checked)values.put(value);else for(int j=values.length()-1;j>=0;j--)if(value.equals(values.optString(j)))values.remove(j);question.put("selectedValues",values);if(eink)v.jumpDrawablesToCurrentState();save();}catch(JSONException ignored){}});choices.addView(button,new LinearLayout.LayoutParams(-1,-2));
         }card.addView(choices);
@@ -397,7 +481,7 @@ public final class MainActivity extends AppCompatActivity {
                             JSONArray answered=session.optJSONArray("questionAnswers");if(answered==null){answered=new JSONArray();session.put("questionAnswers",answered);}answered.put(new JSONObject().put("question",question).put("answer",graded));
                             session.remove("pendingQuestion");session.put("draft","");records.save();
                         }catch(Exception e){records.root=before;throw e;}
-                        draft="";confidenceTouched=false;confidencePercent=50;transcriptPage=Integer.MAX_VALUE;render();tutor(session);
+                        draft="";confidenceTouched=false;confidencePercent=50;render();tutor(session);
                     }catch(Exception error){render();error(error);}});
                 }catch(Exception error){runOnUiThread(()->{if(!isDestroyed() && generation==requestGeneration){busy=false;render();error(error);}});}
             });
@@ -437,22 +521,22 @@ public final class MainActivity extends AppCompatActivity {
     }
     private boolean visibleLesson(JSONObject session){return !session.optString("kind").equals("practice") && (session.optJSONArray("messages")!=null && session.optJSONArray("messages").length()>0 || !session.optString("draft").trim().isEmpty() || session.optJSONArray("documents")!=null && session.optJSONArray("documents").length()>0);}
     private void lessonListEntry(JSONObject session)throws Exception{
-        MaterialCardView frame=new MaterialCardView(this);frame.setCardBackgroundColor(Color.WHITE);frame.setCardElevation(0);frame.setRadius(eink?0:dp(12));frame.setStrokeWidth(dp(1));frame.setStrokeColor(eink?Color.BLACK:MaterialColors.getColor(this,com.google.android.material.R.attr.colorOutlineVariant,subtle));LinearLayout line=row();line.setPadding(dp(16),dp(12),dp(16),dp(12));line.setMinimumHeight(dp(80));LinearLayout copy=column();TextView title=label(session.getString("title"),16,false);androidx.core.widget.TextViewCompat.setTextAppearance(title,com.google.android.material.R.style.TextAppearance_Material3_TitleMedium);title.setMaxLines(2);title.setEllipsize(android.text.TextUtils.TruncateAt.END);copy.addView(title);int count=session.getJSONArray("messages").length();TextView detail=label(count==0?"Draft":count+(count==1?" message · ":" messages · ")+session.optString("phase","Explore"),14,false);detail.setTextColor(subtle);copy.addView(detail);line.addView(copy,new LinearLayout.LayoutParams(0,-2,1));ImageView chevron=new ImageView(this);chevron.setImageResource(R.drawable.ic_chevron);chevron.setImageTintList(ColorStateList.valueOf(subtle));line.addView(chevron,new LinearLayout.LayoutParams(dp(24),dp(24)));frame.addView(line);frame.setClickable(true);frame.setFocusable(true);frame.setContentDescription("Open session: "+session.getString("title"));frame.setOnClickListener(v->{selectedSession=session.optString("id");transcriptPage=Integer.MAX_VALUE;draft="";render();});LinearLayout.LayoutParams spacing=new LinearLayout.LayoutParams(-1,-2);spacing.setMargins(0,0,0,dp(8));content.addView(frame,spacing);
+        MaterialCardView frame=new MaterialCardView(this);frame.setCardBackgroundColor(Color.WHITE);frame.setCardElevation(0);frame.setRadius(dp(eink?20:12));frame.setStrokeWidth(dp(1));frame.setStrokeColor(eink?Color.BLACK:MaterialColors.getColor(this,com.google.android.material.R.attr.colorOutlineVariant,subtle));LinearLayout line=row();line.setPadding(dp(16),dp(12),dp(16),dp(12));line.setMinimumHeight(dp(80));LinearLayout copy=column();TextView title=label(session.getString("title"),16,false);androidx.core.widget.TextViewCompat.setTextAppearance(title,com.google.android.material.R.style.TextAppearance_Material3_TitleMedium);title.setMaxLines(2);title.setEllipsize(android.text.TextUtils.TruncateAt.END);copy.addView(title);int count=session.getJSONArray("messages").length();TextView detail=label(count==0?"Draft":count+(count==1?" message · ":" messages · ")+session.optString("phase","Explore"),14,false);detail.setTextColor(subtle);copy.addView(detail);line.addView(copy,new LinearLayout.LayoutParams(0,-2,1));ImageView chevron=new ImageView(this);chevron.setImageResource(R.drawable.ic_chevron);chevron.setImageTintList(ColorStateList.valueOf(subtle));line.addView(chevron,new LinearLayout.LayoutParams(dp(24),dp(24)));frame.addView(line);frame.setClickable(true);frame.setFocusable(true);frame.setContentDescription("Open session: "+session.getString("title"));frame.setOnClickListener(v->{selectedSession=session.optString("id");draft="";render();});LinearLayout.LayoutParams spacing=new LinearLayout.LayoutParams(-1,-2);spacing.setMargins(0,0,0,dp(8));content.addView(frame,spacing);
     }
     private void newSession(){
-        if(!connectionIdle())return;captureDraft();try{JSONObject session=saveNewSession("",false);screen="Learn";selectedSession=session.getString("id");selectedPractice="";draft="";confidenceTouched=false;confidencePercent=50;transcriptPage=Integer.MAX_VALUE;render();}catch(Exception error){error(error);}
+        if(!connectionIdle())return;captureDraft();try{JSONObject session=saveNewSession("",false);screen="Learn";selectedSession=session.getString("id");selectedPractice="";draft="";confidenceTouched=false;confidencePercent=50;render();}catch(Exception error){error(error);}
     }
     private void showSessionCreator(boolean practice,String restored){
         if(creationDialog!=null && creationDialog.isShowing())return;creationKind=practice?"practice":"lesson";
         LinearLayout body=column();body.setPadding(dp(24),dp(8),dp(24),0);
-        com.google.android.material.textfield.TextInputLayout field=new com.google.android.material.textfield.TextInputLayout(this,null,com.google.android.material.R.attr.textInputOutlinedStyle);field.setId(R.id.creation_goal_layout);field.setHint(practice?"Practice topic":"Learning goal");field.setBoxBackgroundMode(com.google.android.material.textfield.TextInputLayout.BOX_BACKGROUND_OUTLINE);field.setBoxBackgroundColor(Color.WHITE);field.setBoxCornerRadii(dp(eink?0:12),dp(eink?0:12),dp(eink?0:12),dp(eink?0:12));field.setErrorEnabled(true);
+        com.google.android.material.textfield.TextInputLayout field=new com.google.android.material.textfield.TextInputLayout(this,null,com.google.android.material.R.attr.textInputOutlinedStyle);field.setId(R.id.creation_goal_layout);field.setHint(practice?"Practice topic":"Learning goal");field.setBoxBackgroundMode(com.google.android.material.textfield.TextInputLayout.BOX_BACKGROUND_OUTLINE);field.setBoxBackgroundColor(Color.WHITE);field.setBoxCornerRadii(dp(12),dp(12),dp(12),dp(12));field.setErrorEnabled(true);
         if(eink){field.setBoxStrokeColor(Color.BLACK);field.setDefaultHintTextColor(ColorStateList.valueOf(Color.BLACK));field.setHintTextColor(ColorStateList.valueOf(Color.BLACK));}
         com.google.android.material.textfield.TextInputEditText goal=new com.google.android.material.textfield.TextInputEditText(field.getContext());goal.setId(R.id.creation_goal);goal.setText(restored);goal.setTextSize(16);goal.setTextColor(ink);goal.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE|InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);goal.setMinLines(2);goal.setMaxLines(4);goal.setGravity(Gravity.TOP);goal.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_DONE);goal.addTextChangedListener(new android.text.TextWatcher(){public void beforeTextChanged(CharSequence text,int start,int count,int after){}public void onTextChanged(CharSequence text,int start,int before,int count){if(field.getError()!=null && (!text.toString().trim().isEmpty() || practice && records.rows("knowledge").length()>0))field.setError(null);}public void afterTextChanged(android.text.Editable text){}});field.addView(goal,new LinearLayout.LayoutParams(-1,-2));body.addView(field,new LinearLayout.LayoutParams(-1,-2));
         TextView help=label(practice?"Enter a topic, or leave it blank to practise knowledge from your library.":"A topic or a question is enough. You can refine it with your tutor.",14,false);help.setTextColor(subtle);body.addView(help);ScrollView scroll=new ScrollView(this);scroll.addView(body);
         androidx.appcompat.app.AlertDialog dialog=materialDialog().setTitle(practice?"New practice session":"New lesson").setView(scroll).setNegativeButton("Cancel",null).setPositiveButton(practice?"Start practice":"Create lesson",null).create();creationDialog=dialog;creationGoal=goal;
         dialog.setOnDismissListener(d->{if(creationDialog==dialog){creationDialog=null;creationGoal=null;creationKind="";}});
         dialog.show();{android.widget.Button create=dialog.getButton(android.content.DialogInterface.BUTTON_POSITIVE);create.setOnClickListener(v->{if(!dialog.isShowing() || !create.isEnabled())return;String title=goal.getText().toString().trim();if(title.isEmpty() && (!practice || records.rows("knowledge").length()==0)){field.setError(practice?"Enter a topic or add knowledge to your library first.":"Enter a topic or question to create your lesson.");goal.requestFocus();return;}field.setError(null);create.setEnabled(false);
-            try{JSONObject session=saveNewSession(title,practice);android.view.inputmethod.InputMethodManager keyboard=(android.view.inputmethod.InputMethodManager)getSystemService(INPUT_METHOD_SERVICE);keyboard.hideSoftInputFromWindow(goal.getWindowToken(),0);dialog.dismiss();creationDialog=null;creationGoal=null;creationKind="";captureDraft();screen="Learn";selectedSession=session.getString("id");selectedPractice="";draft="";transcriptPage=Integer.MAX_VALUE;render();if(sessionConnectionReady(session))tutor(session);}
+            try{JSONObject session=saveNewSession(title,practice);android.view.inputmethod.InputMethodManager keyboard=(android.view.inputmethod.InputMethodManager)getSystemService(INPUT_METHOD_SERVICE);keyboard.hideSoftInputFromWindow(goal.getWindowToken(),0);dialog.dismiss();creationDialog=null;creationGoal=null;creationKind="";captureDraft();screen="Learn";selectedSession=session.getString("id");selectedPractice="";draft="";render();if(sessionConnectionReady(session))tutor(session);}
             catch(Exception failure){create.setEnabled(true);field.setError("Could not save this "+(practice?"practice session":"lesson")+". Your text is kept; try again.");}
         });goal.setOnEditorActionListener((view,action,event)->{if(action==android.view.inputmethod.EditorInfo.IME_ACTION_DONE){create.performClick();return true;}return false;});goal.requestFocus();if(dialog.getWindow()!=null)dialog.getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE|android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);}
     }
@@ -489,7 +573,7 @@ public final class MainActivity extends AppCompatActivity {
             if(session.has("agentHistory")){JSONObject input=new JSONObject(message.toString());if(session.optString("kind").equals("practice") && session.optJSONObject("pendingQuestion")!=null)input.put("content",practiceMarker("thinking")+":\n"+text);session.getJSONArray("agentHistory").put(input);}
             session.put("draft","");records.save();
         }catch(Exception failure){records.root=before;draft=unsent;render();throw failure;}
-            draft="";transcriptPage=Integer.MAX_VALUE;confidenceTouched=false;confidencePercent=50;render();tutor(session);
+            draft="";confidenceTouched=false;confidencePercent=50;render();tutor(session);
         }catch(Exception error){error(error);}
     }
     private String knowledgeContext() {
@@ -516,7 +600,7 @@ public final class MainActivity extends AppCompatActivity {
             JSONArray request = new JSONArray(messages.toString());
             if (request.length() > 0 && request.getJSONObject(request.length()-1).optString("role").equals("assistant")) request.put(new JSONObject().put("role", "user").put("content", "Continue with the next reasoning step and check my understanding."));
             request=SourceInput.forTurn(request,session.optString("approvedExcerpts"));
-            run("Preparing your lesson", originalPrompt(session.optString("kind").equals("practice")?"practice":session.optString("phase").equals("Explore")?"prober":"teacher"), request, session, reply -> transcriptPage=Integer.MAX_VALUE);
+            run("Preparing your lesson", originalPrompt(session.optString("kind").equals("practice")?"practice":session.optString("phase").equals("Explore")?"prober":"teacher"), request, session, reply -> {});
         } catch (Exception e) { error(e); }
     }
     private interface Completion { void accept(ProviderClient.Reply reply) throws Exception; }
@@ -543,10 +627,10 @@ public final class MainActivity extends AppCompatActivity {
             busy = true; operation = title; int generation = ++requestGeneration;
             streamSession=screen.equals("Learn") && title.equals("Preparing your lesson")?selectedSession:"";streamText="";pendingStream="";
             streamPractice=screen.equals("Practice") && title.equals("Reviewing your reasoning")?selectedPractice:"";streamQuestion=questionIndex;
-            boolean showStream=!eink && (!streamSession.isEmpty() || !streamPractice.isEmpty());
+            boolean showStream=!streamSession.isEmpty() || !streamPractice.isEmpty();
             java.util.function.Consumer<String> preview=showStream?text->queueStream(generation,text):null;
             captureDraft(); render();
-            if(showStream && lessonScroll!=null){NestedScrollView target=lessonScroll;target.post(()->target.fullScroll(View.FOCUS_DOWN));}
+            if(showStream && lessonScroll!=null && (!eink || streamSession.isEmpty() || followLatestSession.equals(streamSession) || readingEnds.contains(streamSession) || !readingPositions.containsKey(streamSession))){NestedScrollView target=lessonScroll;target.post(()->target.fullScroll(View.FOCUS_DOWN));}
             JSONObject lessonSnapshot=lesson==null?null:new JSONObject(lesson.toString());
             if(lessonSnapshot!=null && !lessonSnapshot.optString("_operation").equals("extraction")){lessonSnapshot.put("graphToolsEnabled",prefs.getBoolean("graphToolsEnabled",true)).put("graphContext",GraphRecords.snapshot(records)).put("graphSessions",new JSONArray(records.rows("sessions").toString()));}
             if(lessonSnapshot!=null && !lessonSnapshot.optString("_operation").equals("extraction")){JSONArray files=new JSONArray(),linked=lessonSnapshot.optJSONArray("documents"),all=records.rows("documents");for(int i=0;i<all.length();i++)for(int j=0;linked!=null && j<linked.length();j++)if(all.getJSONObject(i).getString("id").equals(linked.getString(j)))files.put(new JSONObject(all.getJSONObject(i).toString()));lessonSnapshot.put("sourceFiles",files);}
@@ -595,8 +679,9 @@ public final class MainActivity extends AppCompatActivity {
     }
     private void queueStream(int generation,String text){
         // Coalesce on the main thread, so queued previews never retain every token snapshot.
+        if(generation!=requestGeneration)return;
         synchronized(this){pendingStream=text;streamGeneration=generation;if(streamPosted)return;streamPosted=true;}
-        streamHandler.postDelayed(paintStream,100);
+        streamHandler.postDelayed(paintStream,eink?1000:100);
     }
     private JSONArray oneMessage(String text) throws JSONException { return new JSONArray().put(new JSONObject().put("role", "user").put("content", text)); }
     private void saveExtractionCheckpoint(int generation,JSONObject graph,JSONObject view,JSONObject usage,int batch,int total)throws Exception{
@@ -619,7 +704,7 @@ public final class MainActivity extends AppCompatActivity {
         if (set == null) {
             card("Make understanding usable", "Work through one problem at a time. Share your thinking, ask for a hint, and discuss the verdict before moving on.");
             content.addView(primaryButton("New practice session",this::newPractice));
-            JSONArray sessions=records.rows("sessions");for(int i=sessions.length()-1;i>=0;i--){JSONObject practice=sessions.getJSONObject(i);if(!practice.optString("kind").equals("practice"))continue;LinearLayout entry=card(practice.getString("title"),practice.optJSONObject("pendingQuestion")==null?"Practice session":"Problem in progress");entry.setClickable(true);entry.setFocusable(true);entry.setOnClickListener(v->{screen="Learn";selectedSession=practice.optString("id");draft="";transcriptPage=Integer.MAX_VALUE;render();});}
+            JSONArray sessions=records.rows("sessions");for(int i=sessions.length()-1;i>=0;i--){JSONObject practice=sessions.getJSONObject(i);if(!practice.optString("kind").equals("practice"))continue;LinearLayout entry=card(practice.getString("title"),practice.optJSONObject("pendingQuestion")==null?"Practice session":"Problem in progress");entry.setClickable(true);entry.setFocusable(true);entry.setOnClickListener(v->{screen="Learn";selectedSession=practice.optString("id");draft="";render();});}
             JSONArray sets = records.rows("practice");
             if (sets.length() == 0) card("No practice sets yet", "Save questions once and revisit them offline. AI feedback requires your provider connection.");
             for (int i = sets.length()-1; i >= 0; i--) {
@@ -657,7 +742,7 @@ public final class MainActivity extends AppCompatActivity {
             } catch(Exception e) { error(e); }
         }); feedback.setEnabled(!busy); content.addView(feedback);
         if (!q.optString("feedback").isEmpty()) card("Feedback", q.getString("feedback"));
-        if(!eink && busy && selectedPractice.equals(streamPractice) && questionIndex==streamQuestion){LinearLayout preview=card("Feedback · writing…","");liveReply=label("",fontSize,false);markdown.setMarkdown(liveReply,streamText.isEmpty()?"Waiting for the first words…":streamText);preview.addView(liveReply);}
+        if(busy && selectedPractice.equals(streamPractice) && questionIndex==streamQuestion){LinearLayout preview=card("Feedback · writing…","");liveReply=label("",fontSize,false);markdown.setMarkdown(liveReply,streamText.isEmpty()?"Waiting for the first words…":streamText);preview.addView(liveReply);}
         preference("Self review",q.optString("review","Not reviewed"),0,()->materialDialog().setTitle("Review your understanding").setItems(new String[]{"Needs work","Understood"},(d,w)->{try{q.put("review",new String[]{"Needs work","Understood"}[w]);save();render();}catch(Exception e){error(e);}}).show());
         LinearLayout pages = row();
         MaterialButton previous = button("← Previous", () -> { save(); questionIndex--; render(); }); previous.setEnabled(questionIndex > 0);
@@ -720,7 +805,7 @@ public final class MainActivity extends AppCompatActivity {
                 TextView state=label(k.optString("status","Unreviewed"),12,true);state.setTextColor(subtle);c.addView(state);
                 MaterialButton options=button("Claim options",()->materialDialog().setTitle(k.optString("title")).setItems(new String[]{"Review claim","Open source session","Edit claim","Delete claim","Extract this note into the map"},(d,w)->{
                     if(w==0)materialDialog().setTitle("Review this claim").setItems(new String[]{"Unreviewed","Reviewed","Needs correction"},(dialog,index)->{try{k.put("status",new String[]{"Unreviewed","Reviewed","Needs correction"}[index]);save();render();}catch(Exception e){error(e);}}).show();
-                    if(w==1){JSONObject source=records.find("sessions",k.optString("source"));if(source==null){error(new IOException("The source session is not available."));return;}selectedSession=source.optString("id");screen="Learn";transcriptPage=Integer.MAX_VALUE;draft="";render();}
+                    if(w==1){JSONObject source=records.find("sessions",k.optString("source"));if(source==null){error(new IOException("The source session is not available."));return;}selectedSession=source.optString("id");screen="Learn";draft="";render();}
                     if(w==2)editClaim(k);
                     if(w==4)extractNote(k);
                     if(w==3)confirm("Delete this knowledge claim?",()->{deleteClaim(k);});
@@ -814,24 +899,32 @@ public final class MainActivity extends AppCompatActivity {
         }
     }
     private void settings() throws Exception {
+        if(eink)content.setPadding(dp(24),0,dp(24),dp(16));
         if(settingsPage.isEmpty()) {
             String connection="Set up ChatGPT or an API provider";
             JSONObject account=chatGpt==null?null:chatGpt.active();
             if(account!=null && account.optBoolean("connected"))connection=prefs.getBoolean("useChatGpt",false)?"ChatGPT plan selected":"ChatGPT connected · choose billing";
+            settingsGroup("Services");
             preference("Background jobs","Research activity, results and cancellation",R.drawable.ic_info,this::showJobs);
             preference("Web research","Tavily or Brave search API",R.drawable.ic_settings,()->settingsPage("Web research"));
             preference("AI connection",connection,R.drawable.ic_account,()->settingsPage("AI connection"));
-            preference("Knowledge map access",prefs.getBoolean("graphToolsEnabled",true)?"Probe and practice may look up the map":"Map stays local",0,()->{prefs.edit().putBoolean("graphToolsEnabled",!prefs.getBoolean("graphToolsEnabled",true)).apply();render();});
-            preference("Question style",prefs.getBoolean("freeRecall",false)?"Explain in your own words":"Multiple choice",0,()->materialDialog().setTitle("Question style").setItems(new String[]{"Multiple choice","Explain in your own words"},(d,w)->{prefs.edit().putBoolean("freeRecall",w==1).apply();render();}).show());
+            settingsGroup("Learning");
+            preference("Knowledge map access",prefs.getBoolean("graphToolsEnabled",true)?"Probe and practice may look up the map":"Map stays local",R.drawable.ic_library,()->{prefs.edit().putBoolean("graphToolsEnabled",!prefs.getBoolean("graphToolsEnabled",true)).apply();render();});
+            preference("Question style",prefs.getBoolean("freeRecall",false)?"Explain in your own words":"Multiple choice",R.drawable.ic_practice,()->materialDialog().setTitle("Question style").setItems(new String[]{"Multiple choice","Explain in your own words"},(d,w)->{prefs.edit().putBoolean("freeRecall",w==1).apply();render();}).show());
+            settingsGroup("Personalisation");
+            preference("Voice typing",voiceEngine(),R.drawable.ic_mic,()->settingsPage("Voice typing"));
             preference("Appearance",eink?"E-ink mode · "+fontSize+" sp":"Material You · "+fontSize+" sp",R.drawable.ic_palette,()->settingsPage("Appearance"));
+            settingsGroup("Your data");
             preference("Data & backup","Notes, exports and local learning records",R.drawable.ic_backup,()->settingsPage("Data & backup"));
             preference("About","LearnHarness for Android",R.drawable.ic_info,()->settingsPage("About"));
             return;
         }
         switch(settingsPage) {
             case "AI connection":
+                settingsGroup("Connection");
                 preference("Active connection",prefs.getBoolean("useChatGpt",false)?"ChatGPT plan":prefs.getString("provider",PROVIDERS[0])+" · API",0,this::chooseConnection);
                 chatGptSettings();
+                settingsGroup("Providers and models");
                 preference("API provider settings","Optional · separate API billing",R.drawable.ic_settings,()->settingsPage("API provider"));
                 preference("Models by role","Strong, cheap and vision slots; individual role overrides",R.drawable.ic_settings,()->settingsPage("Models by role"));
                 break;
@@ -839,11 +932,13 @@ public final class MainActivity extends AppCompatActivity {
             case "Models by role":roleModelSettings();break;
             case "Web research":searchSettings();break;
             case "Appearance": appearanceSettings();break;
+            case "Voice typing": voiceSettings();break;
             case "Data & backup":
+                settingsGroup("Learning records");
                 preference("Export learning backup","Sessions, knowledge and practice · excludes credentials",R.drawable.ic_backup,()->export(records.root.toString(),"learnharness-backup.json","application/json"));
                 preference("Restore learning backup","Replace records from an Android backup",R.drawable.ic_backup,()->{if(connectionIdle())chooseFile(RESTORE,"application/json");});
                 preference("Import notes","UTF-8 text or Markdown",R.drawable.ic_library,()->chooseFile(IMPORT_NOTES,"*/*"));
-                card("Recorded token usage","Input: "+prefs.getLong("inputTokens",0)+"\nOutput: "+prefs.getLong("outputTokens",0)+"\nCompleted requests on this installation. Provider billing may also include cancelled requests.");
+                preferenceGroup=null;card("Recorded token usage","Input: "+prefs.getLong("inputTokens",0)+"\nOutput: "+prefs.getLong("outputTokens",0)+"\nCompleted requests on this installation. Provider billing may also include cancelled requests.");
                 break;
             default:
                 card("LearnHarness","Version "+BuildConfig.VERSION_NAME+"\nBased on LearnHarness by Amos Blomqvist.\nAGPL-3.0-only");
@@ -853,13 +948,41 @@ public final class MainActivity extends AppCompatActivity {
     }
     private void settingsPage(String page){captureDraft();settingsPage=page;render();}
     private void appearanceSettings(){
-        LinearLayout explanation=card("E-ink mode","Black text, white paper and page turns. Motion and decorative colour are removed.");
+        LinearLayout explanation=card("Display","Black text, white paper and a continuous chat. Reading arrows keep three lines of overlap between screenfuls.");
         MaterialSwitch toggle=new MaterialSwitch(this);toggle.setText("E-ink compatible mode");toggle.setTextColor(ink);toggle.setChecked(eink);toggle.setMinimumHeight(dp(56));toggle.setEnabled(!busy && (chatGpt==null || !chatGpt.isSigningIn()));
         if(eink){toggle.setThumbTintList(ColorStateList.valueOf(ink));toggle.setTrackTintList(ColorStateList.valueOf(paper));toggle.setTrackDecorationTintList(ColorStateList.valueOf(ink));}
         toggle.setOnCheckedChangeListener((button,checked)->{captureDraft();prefs.edit().putBoolean("eink",checked).apply();recreate();});explanation.addView(toggle);
+        settingsGroup("Reading");
         preference("Reading size",fontSize+" sp",0,()->materialDialog().setTitle("Reading text size").setItems(new String[]{"16 sp","18 sp","20 sp","24 sp","28 sp"},(d,w)->{prefs.edit().putInt("fontSize",new int[]{16,18,20,24,28}[w]).apply();recreate();}).show());
-        preference("E-ink page length",prefs.getInt("pageChars",1100)+" characters",0,()->materialDialog().setTitle("E-ink page length").setItems(new String[]{"Short · 650 characters","Medium · 1100 characters","Long · 1800 characters"},(d,w)->{prefs.edit().putInt("pageChars",new int[]{650,1100,1800}[w]).apply();transcriptPage=Integer.MAX_VALUE;render();}).show());
         if(!eink)content.addView(label("Colours follow your device’s Material You palette when supported.",14,false));
+    }
+    private String voiceEngine(){return prefs.getString("voiceEngine",prefs.getBoolean("voiceOffline",false)?"On-device only":"Android speech");}
+    private String voiceBase(String engine){return prefs.getString("voiceBase."+engine,engine.equals("OpenAI")?"https://api.openai.com/v1":engine.equals("Groq")?"https://api.groq.com/openai/v1":engine.equals("Deepgram")?"https://api.deepgram.com/v1":"");}
+    private String voiceModel(String engine){return prefs.getString("voiceModel."+engine,engine.equals("OpenAI")?"gpt-4o-mini-transcribe":engine.equals("Groq")?"whisper-large-v3-turbo":engine.equals("Deepgram")?"nova-3":"whisper-1");}
+    private boolean voiceUsesApi(){return java.util.Arrays.asList("OpenAI","Groq","Deepgram","Compatible API").contains(voiceEngine());}
+    private void voiceSettings(){
+        card("Voice typing","Tap the microphone to dictate into your draft. Review the text before sending.");
+        settingsGroup("Recognition");
+        String engine=voiceEngine();String[] engines={"Android speech","On-device only","OpenAI","Groq","Deepgram","Compatible API"};
+        preference("Speech engine",engine,R.drawable.ic_mic,()->materialDialog().setTitle("Speech engine").setSingleChoiceItems(engines,java.util.Arrays.asList(engines).indexOf(engine),(dialog,which)->{prefs.edit().putString("voiceEngine",engines[which]).apply();dialog.dismiss();render();}).setNegativeButton("Cancel",null).show());
+        preference("Language",prefs.getString("voiceLanguage","").isEmpty()?"Device language / automatic":prefs.getString("voiceLanguage",""),0,()->{
+            EditText language=input("Language tag, e.g. en-IE",prefs.getString("voiceLanguage",""),false);
+            materialDialog().setTitle("Speech language").setMessage("Leave blank for the device language (Android) or automatic detection (API). API transcription uses the language code, such as en.").setView(language).setPositiveButton("Save",(dialog,which)->{String tag=language.getText().toString().trim();if(tag.length()>35 || !tag.isEmpty() && java.util.Locale.forLanguageTag(tag).getLanguage().isEmpty()){error(new IOException("Enter a language tag such as en-IE."));return;}prefs.edit().putString("voiceLanguage",tag).apply();render();}).setNegativeButton("Cancel",null).show();
+        });
+        if(engine.equals("Deepgram"))preference("Deepgram data use",prefs.getBoolean("deepgramOptOut",true)?"Excluded from model improvement":"Provider defaults",0,()->materialDialog().setTitle("Deepgram data use").setMessage("Deepgram may apply different pricing when recordings are excluded from model improvement.").setSingleChoiceItems(new String[]{"Exclude recordings from model improvement","Use provider defaults"},prefs.getBoolean("deepgramOptOut",true)?0:1,(dialog,which)->{prefs.edit().putBoolean("deepgramOptOut",which==0).apply();dialog.dismiss();render();}).setNegativeButton("Cancel",null).show());
+        preferenceGroup=null;
+        if(voiceUsesApi()){
+            content.addView(label("Transcription API",16,true));
+            content.addView(label("Only your recorded audio is uploaded to this provider. API transcription is billed separately from your ChatGPT plan.",14,false));
+            content.addView(label("HTTPS base URL",13,true));EditText base=input("https://provider.example/v1",voiceBase(engine),false);content.addView(base);
+            content.addView(label("Transcription model",13,true));EditText model=input("Model ID",voiceModel(engine),false);content.addView(model);
+            String stored="";try{stored=secrets.get("Voice "+engine);}catch(Exception error){error(error);}
+            content.addView(label("Voice API key",13,true));EditText key=input(engine.equals("Compatible API")?"Optional for unauthenticated endpoints":"API key",stored,false);key.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);content.addView(key);
+            content.addView(primaryButton("Save voice API settings",()->{try{
+                VoiceApi.url(base.getText().toString(),engine.equals("Deepgram"));String name=model.getText().toString().trim();if(name.isEmpty() || name.length()>200)throw new IOException("Enter a transcription model ID.");
+                secrets.set("Voice "+engine,key.getText().toString().trim());prefs.edit().putString("voiceBase."+engine,base.getText().toString().trim()).putString("voiceModel."+engine,name).apply();Toast.makeText(this,"Voice API settings saved",Toast.LENGTH_SHORT).show();render();
+            }catch(Exception error){error(error);}}));
+        }else content.addView(label(engine.equals("On-device only")?"Requires Android 12+ and an installed offline speech service and language model. It never falls back to online speech.":"Uses your configured Android speech service, which may process speech online.",14,false));
     }
     private void apiProviderSettings() throws Exception {
         content.addView(label("API usage is billed separately from ChatGPT. Saving these credentials does not change your selected billing path.",14,false));
@@ -919,8 +1042,8 @@ public final class MainActivity extends AppCompatActivity {
         if(chatGpt!=null)chatGpt.observe(() -> { if(!isDestroyed() && records!=null) { captureDraft();render();showChatGptNotice(); } });
     }
     @Override protected void onResume() { super.onResume();if(records!=null)try{if(!JobService.isLive())new JobStore(this).interrupted();deliverJobs();if(new JobStore(this).activate(records.rows("sessions")))JobService.wake(this);}catch(Exception error){error(error);} if(chatGpt!=null && records!=null) { captureDraft();render();showChatGptNotice(); } }
-    @Override protected void onStop() { if(chatGpt!=null)chatGpt.observe(null); super.onStop(); }
-    @Override protected void onNewIntent(Intent intent) { super.onNewIntent(intent); setIntent(intent);if(intent.getData()!=null && "learnharness".equals(intent.getData().getScheme()) && "signin-complete".equals(intent.getData().getHost())){screen="Settings";settingsPage="AI connection";intent.setData(null);if(records!=null)render();} }
+    @Override protected void onStop() { cancelVoiceTyping();if(chatGpt!=null)chatGpt.observe(null); super.onStop(); }
+    @Override protected void onNewIntent(Intent intent) { super.onNewIntent(intent); setIntent(intent);if(intent.getData()!=null && BuildConfig.SIGN_IN_SCHEME.equals(intent.getData().getScheme()) && "signin-complete".equals(intent.getData().getHost())){screen="Settings";settingsPage="AI connection";intent.setData(null);if(records!=null)render();}if(records!=null)receiveSharedContent(intent); }
     private void showChatGptNotice() {
         String notice=chatGpt.takeNotice();
         if(chatGpt.takeWelcome()) {
@@ -1095,7 +1218,7 @@ public final class MainActivity extends AppCompatActivity {
     private void documentMenu(JSONObject doc){
         materialDialog().setTitle(doc.optString("title")).setItems(new String[]{"Search / grep / read pages","Use in a new lesson","Open original file","Remove file reference"},(d,w)->{
             if(w==0)searchDocument(doc,"");
-            if(w==1){EditText goal=input("What do you want to learn from this source?","",true);materialDialog().setTitle("Study this source").setView(goal).setNegativeButton("Cancel",null).setPositiveButton("Create lesson",(dialog,index)->{try{if(goal.getText().toString().trim().isEmpty())return;JSONObject lesson=new JSONObject().put("id",Records.id()).put("title",goal.getText().toString().trim()).put("phase","Explore").put("documents",new JSONArray().put(doc.getString("id"))).put("messages",new JSONArray().put(new JSONObject().put("role","user").put("content",goal.getText().toString().trim())));records.rows("sessions").put(lesson);selectedSession=lesson.getString("id");screen="Learn";draft="";transcriptPage=Integer.MAX_VALUE;save();render();searchDocument(doc,selectedSession);}catch(Exception e){error(e);}}).show();}
+            if(w==1){EditText goal=input("What do you want to learn from this source?","",true);materialDialog().setTitle("Study this source").setView(goal).setNegativeButton("Cancel",null).setPositiveButton("Create lesson",(dialog,index)->{try{if(goal.getText().toString().trim().isEmpty())return;JSONObject lesson=new JSONObject().put("id",Records.id()).put("title",goal.getText().toString().trim()).put("phase","Explore").put("documents",new JSONArray().put(doc.getString("id"))).put("messages",new JSONArray().put(new JSONObject().put("role","user").put("content",goal.getText().toString().trim())));records.rows("sessions").put(lesson);selectedSession=lesson.getString("id");screen="Learn";draft="";save();render();searchDocument(doc,selectedSession);}catch(Exception e){error(e);}}).show();}
             if(w==2)try{startActivity(new Intent(Intent.ACTION_VIEW,android.net.Uri.parse(doc.optString("uri"))).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION));}catch(ActivityNotFoundException e){error(new IOException("No reader is available for this document."));}
             if(w==3)confirm("Remove this reference from Library? The original file stays in Files.",()->{if(!connectionIdle())return;records.remove("documents",doc.optString("id"));try{getContentResolver().releasePersistableUriPermission(android.net.Uri.parse(doc.optString("uri")),Intent.FLAG_GRANT_READ_URI_PERMISSION);}catch(Exception ignored){}save();render();});
         }).show();
@@ -1144,22 +1267,57 @@ public final class MainActivity extends AppCompatActivity {
         try { startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType(mime).putExtra(Intent.EXTRA_TITLE, filename), EXPORT); }
         catch(ActivityNotFoundException e) { new File(getCacheDir(), "pending-export.txt").delete(); error(new IOException("No document picker is available on this device.")); }
     }
+    private boolean receiveSharedContent(Intent intent){
+        String id=intent.getStringExtra(SharedContent.EXTRA);if(id==null)return false;intent.removeExtra(SharedContent.EXTRA);
+        try{
+            SharedContent inbox=new SharedContent(this);JSONObject share=inbox.load(id);if(share==null || share.optBoolean("consumed"))return true;
+            captureDraft();JSONObject before=new JSONObject(records.root.toString());JSONObject target;
+            try{target=ShareDestinations.attach(records.root,share,inbox.documents(share),share.optString("destination"),share.optBoolean("practice"),System.currentTimeMillis());if(target==null)throw new IOException("The selected conversation is no longer available.");records.save();}catch(Exception failure){records.root=before;throw failure;}
+            try{share.put("consumed",true);inbox.save(share);}catch(Exception ignored){}
+            if(creationDialog!=null){creationDialog.dismiss();creationDialog=null;creationGoal=null;creationKind="";}
+            selectedSession=target.getString("id");selectedPractice="";screen="Learn";settingsPage="";draft=target.optString("draft");confidenceTouched=false;confidencePercent=50;render();
+            Toast.makeText(this,"Shared content added. Review your draft before sending.",Toast.LENGTH_LONG).show();
+        }catch(Exception failure){error(failure);}
+        return true;
+    }
+    private void cancelVoiceTyping(){
+        if(voiceTyping!=null){voiceTyping.cancel();voiceTyping=null;}
+        if(apiVoiceTyping!=null){apiVoiceTyping.cancel();apiVoiceTyping=null;}
+        if(voiceDialog!=null){voiceDialog.dismiss();voiceDialog=null;}
+    }
     private void dictate() {
-        Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            .putExtra(RecognizerIntent.EXTRA_PROMPT, "Explain your thinking").putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true);
-        captureDraft();
-        try { startActivityForResult(intent, DICTATE); } catch(ActivityNotFoundException e) { error(new IOException("No speech recognition app is installed. You can still type your answer.")); }
+        if(composer==null || busy)return;
+        if(androidx.core.content.ContextCompat.checkSelfPermission(this,android.Manifest.permission.RECORD_AUDIO)!=android.content.pm.PackageManager.PERMISSION_GRANTED){voicePermission.launch(android.Manifest.permission.RECORD_AUDIO);return;}
+        cancelVoiceTyping();captureDraft();
+        EditText target=composer;String expected=target.getText().toString();
+        int start=Math.max(0,Math.min(target.getSelectionStart(),target.getSelectionEnd()));
+        int end=Math.max(start,Math.max(target.getSelectionStart(),target.getSelectionEnd()));
+        LinearLayout panel=column();panel.setPadding(dp(24),dp(8),dp(24),dp(12));
+        TextView preview=label("Listening…",fontSize,false);panel.addView(preview);
+        voiceDialog=materialDialog().setTitle("Voice typing").setView(panel).setNegativeButton("Cancel",(dialog,which)->cancelVoiceTyping()).setPositiveButton("Finish",null).create();
+        voiceDialog.setOnCancelListener(dialog->cancelVoiceTyping());voiceDialog.show();
+        AndroidVoiceTyping.Listener listener=new AndroidVoiceTyping.Listener(){
+            public void partial(String text){if(!text.isEmpty())preview.setText(text);}
+            public void finishing(){if(voiceDialog!=null){voiceDialog.setTitle("Finishing…");voiceDialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE).setEnabled(false);}}
+            public void error(String message){cancelVoiceTyping();MainActivity.this.error(new IOException(message));}
+            public void result(String text){
+                cancelVoiceTyping();
+                if(composer!=target || !expected.equals(target.getText().toString()) || Math.min(target.getSelectionStart(),target.getSelectionEnd())!=start || Math.max(target.getSelectionStart(),target.getSelectionEnd())!=end){Toast.makeText(MainActivity.this,"Draft changed; speech was not inserted.",Toast.LENGTH_LONG).show();return;}
+                String insertion=VoiceInsertion.text(expected,start,end,text);target.getText().replace(start,end,insertion);target.setSelection(start+insertion.length());captureDraft();save();
+            }
+        };
+        voiceDialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener(view->{if(voiceTyping!=null)voiceTyping.stop();else if(apiVoiceTyping!=null)apiVoiceTyping.stop();});
+        if(voiceUsesApi()){
+            preview.setText("Recording · tap Finish to transcribe\n"+voiceEngine()+" · up to 2 minutes");
+            String language=prefs.getString("voiceLanguage","");if(!language.isEmpty())language=java.util.Locale.forLanguageTag(language).getLanguage();
+            try{apiVoiceTyping=new ApiVoiceTyping(listener);apiVoiceTyping.start(this,voiceBase(voiceEngine()),voiceModel(voiceEngine()),language,secrets.get("Voice "+voiceEngine()),voiceEngine().equals("Compatible API"),voiceEngine().equals("Deepgram"),prefs.getBoolean("deepgramOptOut",true));}catch(Exception error){cancelVoiceTyping();error(error);}
+        }else{voiceTyping=new AndroidVoiceTyping(listener);voiceTyping.start(this,voiceEngine().equals("On-device only"),prefs.getString("voiceLanguage",""));}
     }
     @Override protected void onActivityResult(int code, int result, Intent data) {
-        if(code==OPEN_GRAPH && result==RESULT_OK && data!=null){String id=data.getStringExtra("session"),message=data.getStringExtra("message");JSONObject target=records.find("sessions",id);if(target!=null){screen="Learn";selectedSession=id;draft="";transcriptPage=Integer.MAX_VALUE;render();if(message!=null && !message.isEmpty())showSourcePassage(target,message);}return;}
+        if(code==OPEN_GRAPH && result==RESULT_OK && data!=null){String id=data.getStringExtra("session"),message=data.getStringExtra("message");JSONObject target=records.find("sessions",id);if(target!=null){screen="Learn";selectedSession=id;draft="";render();if(message!=null && !message.isEmpty())showSourcePassage(target,message);}return;}
         super.onActivityResult(code, result, data);
         if (result != RESULT_OK || data == null) { if (code == EXPORT) new File(getCacheDir(), "pending-export.txt").delete(); return; }
         try {
-            if (code == DICTATE) {
-                ArrayList<String> words = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
-                if (words != null && !words.isEmpty()) { draft = draft.isEmpty() ? words.get(0) : draft + " " + words.get(0); render(); }
-                return;
-            }
             if(code==OPEN_TEMPLATE){String followup=data.getStringExtra("text");if(followup!=null && !followup.isEmpty()){draft=draft.isEmpty()?followup:draft+"\n\n"+followup;JSONObject session=records.find("sessions",selectedSession);if(session!=null)session.put("draft",draft);save();render();}return;}
             if (data.getData() == null) return;
             if(code==ADD_TREE){registerTree(data);return;}
